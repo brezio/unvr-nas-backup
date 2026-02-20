@@ -91,18 +91,19 @@ docker compose up -d
 
 ## Updating
 
+If you cloned the repo:
 ```bash
 cd /opt/unvr-nas-backup
 ./scripts/update.sh
 ```
 
-This pulls the latest code and Docker image, then restarts the container. Your `.env` and archive are preserved. You can also update manually:
-
+Standalone install:
 ```bash
-git pull
-docker compose pull
-docker compose up -d
+cd /opt/unvr-nas-backup
+docker compose pull && docker compose up -d
 ```
+
+Your `.env` and archive are preserved in both cases.
 
 ## Configuration
 
