@@ -1,11 +1,11 @@
 # unvr-nas-backup
 
-Dockerized backup system that pulls surveillance video from a Unifi Protect CloudKey/UNVR, remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
+Dockerized backup system that pulls surveillance video from a UniFi Protect console, remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
 
 ## How it works
 
 ```
-NAS (Docker)                          CloudKey / UNVR
+NAS (Docker)                          UniFi Protect Console
 ┌────────────────────────┐            ┌─────────────────────┐
 │  cron → backup.sh      │──── SSH ──▶│  PostgreSQL :5433    │
 │                        │            │  .ubv video files    │
@@ -48,11 +48,11 @@ docker compose build && docker compose up -d
 
 | Variable | Default | Description |
 |---|---|---|
-| `PROTECT_HOST` | *(required)* | Hostname or IP of the CloudKey / UNVR |
-| `PROTECT_SSH_USER` | `root` | SSH user on the CloudKey |
-| `PROTECT_SSH_PORT` | `22` | SSH port on the CloudKey |
-| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the CloudKey |
-| `PROTECT_DB_PORT` | `5433` | PostgreSQL port on the CloudKey |
+| `PROTECT_HOST` | *(required)* | Hostname or IP of the Protect console |
+| `PROTECT_SSH_USER` | `root` | SSH user on the console |
+| `PROTECT_SSH_PORT` | `22` | SSH port on the console |
+| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the console |
+| `PROTECT_DB_PORT` | `5433` | PostgreSQL port on the console |
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
 | `BACKUP_HOURS` | `1` | How many hours back to look for recordings |
 | `BATCH_SIZE` | `5` | Number of files to SCP before pausing |
@@ -64,11 +64,25 @@ docker compose build && docker compose up -d
 | `TZ` | `UTC` | Timezone |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
+## Compatibility
+
+Tested and confirmed working on:
+
+| Console | Status |
+|---|---|
+| UniFi CloudKey Gen2+ | Tested |
+| UniFi Cloud Gateway Fiber (UCG-Fiber) | Tested |
+| UniFi Dream Machine (UDM) | Likely compatible — testers welcome |
+| UniFi Dream Router (UDR) | Likely compatible — testers welcome |
+| UniFi NVR (UNVR / UNVR-Pro) | Likely compatible — testers welcome |
+
+Any device running UniFi Protect with SSH access, PostgreSQL on port 5433, and `.ubv` video files at `/srv/unifi-protect/video` should work. If you've tested on a device not listed above, please [open an issue](https://github.com/Ozark-Connect/unvr-nas-backup/issues) to let us know.
+
 ## Prerequisites
 
 - Docker and Docker Compose on the NAS
-- SSH key-based access from the NAS to the CloudKey (`ssh root@<cloudkey>` must work without a password)
-- The CloudKey must be running Unifi Protect with PostgreSQL on port 5433
+- SSH key-based access from the NAS to the Protect console (`ssh root@<console>` must work without a password)
+- The console must be running UniFi Protect with PostgreSQL on port 5433
 
 ## Archive structure
 
@@ -95,8 +109,8 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 
 ## Troubleshooting
 
-- **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the CloudKey. The container copies keys to fix permissions automatically.
-- **No recordings found**: Increase `BACKUP_HOURS` or check that the CloudKey has active recordings. Only `type=rotating` and `active=false` files are selected.
+- **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the Protect console. The container copies keys to fix permissions automatically.
+- **No recordings found**: Increase `BACKUP_HOURS` or check that the console has active recordings. Only `type=rotating` and `active=false` files are selected.
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
 - **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run.
 
