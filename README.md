@@ -2,7 +2,7 @@
 
 Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
 
-> **Note:** This project backs up *continuous recording video*, not detection event clips (which UniFi Protect can already export natively via the Protect "Continuous Archiving" Labs feature). As far as we know, this is the only open-source tool that does this.
+> **Note:** Recordings can only be backed up after the Protect device finishes writing them, so there is an inherent delay (typically one recording segment, ~1 GB per file). This is **not** real-time replication — it is near-real-time archival. For the best coverage, pair this tool with UniFi Protect's built-in **Continuous Archiving** (UI Labs) feature, which handles detection event clips. As far as we know, this is the only open-source tool that backs up continuous recording video.
 
 ## How it works
 
