@@ -60,6 +60,7 @@ tz="${tz:-UTC}"
 
 echo
 echo "Enter the cron schedule for backups:"
+echo "  Examples: */15 * * * * (every 15 min), */30 * * * * (every 30 min), 0 * * * * (hourly)"
 read -rp "  CRON_SCHEDULE [*/15 * * * *]: " cron_schedule
 cron_schedule="${cron_schedule:-*/15 * * * *}"
 
