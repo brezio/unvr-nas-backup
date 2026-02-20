@@ -5,10 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-# Load .env for ARCHIVE_PATH
+# Load .env for ARCHIVE_PATH (disable globbing so CRON_SCHEDULE=* * * * * is safe)
 if [ -f .env ]; then
+    set -f
     # shellcheck disable=SC1091
     set -a && . .env && set +a
+    set +f
 fi
 
 echo "=== unvr-nas-backup status ==="
