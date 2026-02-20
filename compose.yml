@@ -1,0 +1,26 @@
+services:
+  unvr-nas-backup:
+    build: .
+    container_name: unvr-nas-backup
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh-mount:ro
+      - staging:/staging
+      - ${ARCHIVE_PATH:?ARCHIVE_PATH is required}:/archive
+    tmpfs:
+      - /tmp:size=2G
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "cron"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  staging:

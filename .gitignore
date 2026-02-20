@@ -1,0 +1,21 @@
+.env
+*.env.local
+
+# SSH keys
+id_*
+*.pem
+*.key
+
+# Runtime
+staging/
+archive/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

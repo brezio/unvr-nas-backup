@@ -1,0 +1,5 @@
+# Ensure shell scripts always use LF (they run in Linux containers)
+*.sh text eol=lf
+Dockerfile text eol=lf
+compose.yml text eol=lf
+.env.example text eol=lf
