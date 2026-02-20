@@ -34,30 +34,23 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 
 - Docker and Docker Compose on the NAS (x86_64 or ARM64)
 - Network connectivity from the NAS to the Protect device
-- An SSH key authorized on the Protect device (the container mounts your key via `SSH_KEY_PATH` and handles the rest)
+- SSH enabled on the Protect device (the installer can set up key auth for you)
 - A UniFi Protect device with active recordings
 
 ### Setting up SSH access
 
 1. **Enable SSH on your Protect device**: In your UniFi Console, go to **Settings -> Control Plane -> Console -> SSH** and enable it. Note the username and password you set here.
 
-2. **Generate an SSH key on your NAS** (if you don't already have one):
+2. **Run the installer** - it will detect that SSH key auth isn't set up and offer to configure it automatically. It generates a key if needed and copies it to your Protect device using `ssh-copy-id`. You just need to enter the SSH password once.
+
+   If you prefer to set up SSH manually:
    ```bash
-   ssh-keygen -t ed25519
+   ssh-keygen -t ed25519                  # generate a key (if you don't have one)
+   ssh-copy-id root@<protect-host>        # copy it to the Protect device
+   ssh root@<protect-host>                # verify it works (no password prompt)
    ```
 
-3. **Copy the key to your Protect device**:
-   ```bash
-   ssh-copy-id root@<protect-host>
-   ```
-   Enter the SSH password you configured in step 1 when prompted.
-
-4. **Verify it works** (should log in with no password prompt):
-   ```bash
-   ssh root@<protect-host>
-   ```
-
-That's it. The container will mount your key from `SSH_KEY_PATH` (defaults to `~/.ssh`) and use it automatically.
+The container mounts your key from `SSH_KEY_PATH` (defaults to `~/.ssh`) and uses it automatically.
 
 ## Quick start
 

@@ -116,12 +116,62 @@ fi
 # Test SSH
 echo "Testing SSH to ${ssh_user}@${protect_host}..."
 ssh_key_path="${SSH_KEY_PATH:-$HOME/.ssh}"
-if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$(ls "${ssh_key_path}"/id_ed25519 "${ssh_key_path}"/id_rsa "${ssh_key_path}"/id_ecdsa 2>/dev/null | head -1)" "${ssh_user}@${protect_host}" "echo ok" &>/dev/null; then
+ssh_key_file="$(ls "${ssh_key_path}"/id_ed25519 "${ssh_key_path}"/id_rsa "${ssh_key_path}"/id_ecdsa 2>/dev/null | head -1)"
+
+ssh_ok=false
+if [ -n "$ssh_key_file" ]; then
+    if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$ssh_key_file" "${ssh_user}@${protect_host}" "echo ok" &>/dev/null; then
+        ssh_ok=true
+    fi
+fi
+
+if $ssh_ok; then
     echo "SSH connection OK"
 else
-    echo "WARNING: Cannot SSH to ${ssh_user}@${protect_host}"
-    echo "Make sure your SSH key in ${ssh_key_path} is authorized on the Protect device before starting."
+    echo "SSH key auth is not working yet."
     echo
+    if ! command -v ssh-copy-id &>/dev/null; then
+        echo "WARNING: ssh-copy-id is not installed on this system."
+        echo "Install openssh-client or set up SSH key auth manually (see README)."
+        echo
+    else
+        read -rp "Set up SSH key auth now? You'll need the SSH password from your UniFi Console. [Y/n] " setup_ssh
+        if [[ ! "$setup_ssh" =~ ^[Nn] ]]; then
+            # Generate key if none exists
+            if [ -z "$ssh_key_file" ]; then
+                echo "No SSH key found. Generating one..."
+                mkdir -p "${ssh_key_path}"
+                ssh-keygen -t ed25519 -N "" -f "${ssh_key_path}/id_ed25519"
+                ssh_key_file="${ssh_key_path}/id_ed25519"
+                echo
+            fi
+
+            # Copy key to Protect device
+            echo "Copying SSH key to ${ssh_user}@${protect_host}..."
+            echo "Enter the SSH password when prompted."
+            if ssh-copy-id -i "$ssh_key_file" "${ssh_user}@${protect_host}"; then
+                echo
+                # Verify key-based auth works
+                echo "Verifying key-based SSH..."
+                if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$ssh_key_file" "${ssh_user}@${protect_host}" "echo ok" &>/dev/null; then
+                    echo "SSH key auth is working."
+                else
+                    echo "WARNING: SSH key was copied but verification failed."
+                    echo "You may need to troubleshoot SSH access before backups will work."
+                    echo
+                fi
+            else
+                echo
+                echo "WARNING: ssh-copy-id failed. Check the password and try again, or set up SSH manually."
+                echo "See the README for manual SSH setup instructions."
+                echo
+            fi
+        else
+            echo "Skipping SSH key setup."
+            echo "Make sure your SSH key in ${ssh_key_path} is authorized on the Protect device before starting."
+            echo
+        fi
+    fi
 fi
 
 # Pull and start
