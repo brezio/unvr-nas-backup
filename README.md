@@ -1,15 +1,17 @@
 # unvr-nas-backup
 
-Dockerized backup system that pulls surveillance video from a UniFi Protect console, remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
+Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
+
+> **Note:** This project backs up *continuous recording video*, not detection event clips (which UniFi Protect can already export natively via the Protect Labs feature). As far as we know, this is the only open-source tool that does this.
 
 ## How it works
 
 ```
-NAS (Docker)                          UniFi Protect Console
-┌────────────────────────┐            ┌─────────────────────┐
-│  cron → backup.sh      │──── SSH ──▶│  PostgreSQL :5433    │
-│                        │            │  .ubv video files    │
-│  1. Query DB for files │            └─────────────────────┘
+NAS (Docker)                       Protect Device (CloudKey, UCG, UDM, UNVR, etc.)
+┌────────────────────────┐         ┌─────────────────────┐
+│  cron → backup.sh      │── SSH ─▶│  PostgreSQL :5433    │
+│                        │         │  .ubv video files    │
+│  1. Query DB for files │         └─────────────────────┘
 │  2. SCP .ubv to staging│
 │  3. Remux → .mp4       │
 │  4. Rename with camera │
@@ -32,8 +34,10 @@ cd /opt/unvr-nas-backup
 # Or manually:
 cp .env.example .env
 # Edit .env — set PROTECT_HOST and ARCHIVE_PATH at minimum
-docker compose build && docker compose up -d
+docker compose up -d
 ```
+
+The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas-backup:latest`. To build locally instead, run `docker compose build`.
 
 ## Helper scripts
 
@@ -48,11 +52,11 @@ docker compose build && docker compose up -d
 
 | Variable | Default | Description |
 |---|---|---|
-| `PROTECT_HOST` | *(required)* | Hostname or IP of the Protect console |
-| `PROTECT_SSH_USER` | `root` | SSH user on the console |
-| `PROTECT_SSH_PORT` | `22` | SSH port on the console |
-| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the console |
-| `PROTECT_DB_PORT` | `5433` | PostgreSQL port on the console |
+| `PROTECT_HOST` | *(required)* | Hostname or IP of your Protect device |
+| `PROTECT_SSH_USER` | `root` | SSH user |
+| `PROTECT_SSH_PORT` | `22` | SSH port |
+| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the device |
+| `PROTECT_DB_PORT` | `5433` | PostgreSQL port |
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
 | `BACKUP_HOURS` | `1` | How many hours back to look for recordings |
 | `BATCH_SIZE` | `5` | Number of files to SCP before pausing |
@@ -68,21 +72,21 @@ docker compose build && docker compose up -d
 
 Tested and confirmed working on:
 
-| Console | Status |
+| Device | Status |
 |---|---|
 | UniFi CloudKey Gen2+ | Tested |
-| UniFi Cloud Gateway Fiber (UCG-Fiber) | Tested |
-| UniFi Dream Machine (UDM) | Likely compatible — testers welcome |
-| UniFi Dream Router (UDR) | Likely compatible — testers welcome |
-| UniFi NVR (UNVR / UNVR-Pro) | Likely compatible — testers welcome |
+| UniFi Cloud Gateway (UCG-Fiber, UCG-Ultra, UCG-Max, etc.) | Tested |
+| UniFi Dream Machine (UDM, UDM-Pro, UDM-SE, etc.) | Likely compatible — testers welcome |
+| UniFi Dream Router (UDR, etc.) | Likely compatible — testers welcome |
+| UniFi NVR (UNVR, UNVR-Pro, etc.) | Likely compatible — testers welcome |
 
-Any device running UniFi Protect with SSH access, PostgreSQL on port 5433, and `.ubv` video files at `/srv/unifi-protect/video` should work. If you've tested on a device not listed above, please [open an issue](https://github.com/Ozark-Connect/unvr-nas-backup/issues) to let us know.
+Should work on any device running UniFi Protect with SSH access, PostgreSQL on port 5433, and `.ubv` video files at `/srv/unifi-protect/video`. If you've tested on a device not listed here, please [open an issue](https://github.com/Ozark-Connect/unvr-nas-backup/issues) to let us know.
 
 ## Prerequisites
 
 - Docker and Docker Compose on the NAS
-- SSH key-based access from the NAS to the Protect console (`ssh root@<console>` must work without a password)
-- The console must be running UniFi Protect with PostgreSQL on port 5433
+- SSH key-based access from the NAS to the Protect device (`ssh root@<host>` must work without a password)
+- UniFi Protect running with PostgreSQL on port 5433
 
 ## Archive structure
 
@@ -109,8 +113,8 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 
 ## Troubleshooting
 
-- **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the Protect console. The container copies keys to fix permissions automatically.
-- **No recordings found**: Increase `BACKUP_HOURS` or check that the console has active recordings. Only `type=rotating` and `active=false` files are selected.
+- **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the Protect device. The container copies keys to fix permissions automatically.
+- **No recordings found**: Increase `BACKUP_HOURS` or check that the device has active recordings. Only `type=rotating` and `active=false` files are selected.
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
 - **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run.
 
@@ -125,3 +129,7 @@ If you find this project useful, consider [sponsoring the maintainer](https://gi
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+<sub>unvr-nas-backup is an independent project by Ozark Connect and is not affiliated with, endorsed by, or sponsored by Ubiquiti, Inc. Ubiquiti, UniFi, UniFi Protect, UCG, UDM, UDR, UNVR, and Cloud Key are trademarks or registered trademarks of Ubiquiti, Inc. All other trademarks are the property of their respective owners.</sub>

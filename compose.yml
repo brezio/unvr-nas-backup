@@ -1,5 +1,6 @@
 services:
   unvr-nas-backup:
+    image: ghcr.io/ozark-connect/unvr-nas-backup:latest
     build: .
     container_name: unvr-nas-backup
     restart: unless-stopped
