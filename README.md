@@ -214,6 +214,14 @@ See [TODO.md](TODO.md) for details.
 
 This project uses [unifi-protect-remux](https://github.com/petergeneric/unifi-protect-remux) by Peter Wright for converting `.ubv` video files to `.mp4`. The remux binary is licensed under [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) and is downloaded at build time - see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
 
+## Related projects
+
+**[unifi-protect-backup](https://github.com/ep1cman/unifi-protect-backup)** by ep1cman is an excellent tool for backing up UniFi Protect event clips in real time via the Protect API. It captures motion events, smart detections (person, vehicle, animal, etc.), and supports rclone backends so you can archive directly to cloud storage. It's well maintained and worth checking out.
+
+The two tools are complementary. ep1cman's tool handles **events** - the clips that Protect generates when it detects something. This tool handles the **continuous 24/7 recordings between events** that the Protect API doesn't expose. Together they give you full off-box coverage of everything your cameras record.
+
+Why does that matter? Event-based backup has an inherent blind spot: if Protect's detection doesn't fire - common at night, in low contrast conditions, with unusual angles, or just edge cases where the AI doesn't trigger - that footage never gets exported. It's still on the Protect device's drive, but it's not in your backup. This tool pulls the complete recording history directly from the device regardless of whether an event was generated, so nothing falls through the cracks.
+
 ## Also from Ozark Connect
 
 <p align="center">
