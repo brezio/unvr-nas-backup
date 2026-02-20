@@ -105,6 +105,26 @@ docker compose pull && docker compose up -d
 
 Your `.env` and archive are preserved in both cases.
 
+## Stopping
+
+```bash
+cd /opt/unvr-nas-backup
+docker compose down
+```
+
+This stops the container. Your archive and `.env` are not affected. Run `docker compose up -d` to start it again.
+
+## Uninstalling
+
+```bash
+cd /opt/unvr-nas-backup
+docker compose down -v              # stop container and remove staging volume
+docker rmi ghcr.io/ozark-connect/unvr-nas-backup:latest   # remove the image
+cd / && rm -rf /opt/unvr-nas-backup # remove install directory
+```
+
+Your archive directory is **not** deleted automatically. Remove it manually if you no longer need the recordings.
+
 ## Configuration
 
 | Variable | Default | Description |
