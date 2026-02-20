@@ -205,7 +205,7 @@ This project uses [unifi-protect-remux](https://github.com/petergeneric/unifi-pr
 ## Also from Ozark Connect
 
 <p align="center">
-  <img src="https://github.com/Ozark-Connect/NetworkOptimizer/raw/main/docs/images/app-logo-v2.png" alt="Network Optimizer" width="200">
+  <a href="https://github.com/Ozark-Connect/NetworkOptimizer"><img src="https://github.com/Ozark-Connect/NetworkOptimizer/raw/main/docs/images/app-logo-v2.png" alt="Network Optimizer" width="200"></a>
 </p>
 
 If you find this useful, check out **[Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer)** - a self-hosted UniFi network analysis platform with security auditing, Wi-Fi optimization, LAN speed testing with Layer 2 path tracing, adaptive SQM, coverage mapping, and more.
