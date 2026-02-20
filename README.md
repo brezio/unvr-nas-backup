@@ -33,8 +33,31 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 ## Prerequisites
 
 - Docker and Docker Compose on the NAS (x86_64 or ARM64)
-- SSH key-based access from the NAS to the Protect device (`ssh root@<host>` must work without a password)
-- UniFi Protect running with PostgreSQL on port 5433
+- Network connectivity from the NAS to the Protect device
+- An SSH key authorized on the Protect device (the container mounts your key via `SSH_KEY_PATH` and handles the rest)
+- A UniFi Protect device with active recordings
+
+### Setting up SSH access
+
+1. **Enable SSH on your Protect device**: In your UniFi Console, go to **Settings -> Control Plane -> Console -> SSH** and enable it. Note the username and password you set here.
+
+2. **Generate an SSH key on your NAS** (if you don't already have one):
+   ```bash
+   ssh-keygen -t ed25519
+   ```
+
+3. **Copy the key to your Protect device**:
+   ```bash
+   ssh-copy-id root@<protect-host>
+   ```
+   Enter the SSH password you configured in step 1 when prompted.
+
+4. **Verify it works** (should log in with no password prompt):
+   ```bash
+   ssh root@<protect-host>
+   ```
+
+That's it. The container will mount your key from `SSH_KEY_PATH` (defaults to `~/.ssh`) and use it automatically.
 
 ## Quick start
 
