@@ -195,5 +195,11 @@ docker compose up -d
 echo
 echo "=== Installation complete ==="
 echo "  Logs:   docker compose logs -f"
-echo "  Status: ./scripts/status.sh"
-echo "  Update: ./scripts/update.sh"
+if [ -f ./scripts/status.sh ]; then
+    echo "  Status: ./scripts/status.sh"
+fi
+if [ -f ./scripts/update.sh ]; then
+    echo "  Update: ./scripts/update.sh"
+else
+    echo "  Update: docker compose pull && docker compose up -d"
+fi
