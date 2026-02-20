@@ -7,11 +7,11 @@ Dockerized backup system that pulls continuous surveillance video from a UniFi P
 ## How it works
 
 ```
-NAS (Docker)                       Protect Device (CloudKey, UCG, UDM, UNVR, etc.)
-┌────────────────────────┐         ┌─────────────────────────┐
-│  cron → backup.sh      │── SSH ─▶│  PostgreSQL :5433        │
-│                        │         │  .ubv video files        │
-│  1. Query DB for files │         └─────────────────────────┘
+NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, etc.)
+┌────────────────────────┐          ┌─────────────────────────┐
+│  cron → backup.sh      │── SSH -> │  PostgreSQL :5433       │
+│                        │          │  .ubv video files       │
+│  1. Query DB for files │          └─────────────────────────┘
 │  2. SCP .ubv to staging│
 │  3. Remux → .mp4       │
 │  4. Rename with camera │
