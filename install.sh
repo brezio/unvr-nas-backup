@@ -116,7 +116,7 @@ fi
 # Test SSH
 echo "Testing SSH to ${ssh_user}@${protect_host}..."
 ssh_key_path="${SSH_KEY_PATH:-$HOME/.ssh}"
-ssh_key_file="$(ls "${ssh_key_path}"/id_ed25519 "${ssh_key_path}"/id_rsa "${ssh_key_path}"/id_ecdsa 2>/dev/null | head -1)"
+ssh_key_file="$(ls "${ssh_key_path}"/id_ed25519 "${ssh_key_path}"/id_rsa "${ssh_key_path}"/id_ecdsa 2>/dev/null | head -1 || true)"
 
 ssh_ok=false
 if [ -n "$ssh_key_file" ]; then
