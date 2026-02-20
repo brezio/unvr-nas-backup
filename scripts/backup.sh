@@ -7,7 +7,6 @@ set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROTECT_SSH_USER="${PROTECT_SSH_USER:-root}"
-PROTECT_SSH_PORT="${PROTECT_SSH_PORT:-22}"
 PROTECT_VIDEO_PATH="${PROTECT_VIDEO_PATH:-/srv/unifi-protect/video}"
 PROTECT_DB_PORT="${PROTECT_DB_PORT:-5433}"
 PROTECT_DB_NAME="${PROTECT_DB_NAME:-unifi-protect}"
@@ -54,11 +53,18 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Prep staging dirs ────────────────────────────────────────────────────────
+# Clean up any stale files from a previous interrupted run
+rm -rf "${STAGING_DIR}/ubv" "${STAGING_DIR}/remuxed" "${STAGING_DIR}"/*.meta
 mkdir -p "${STAGING_DIR}/ubv" "$REMUX_DIR"
 
+# ── Disk space check ────────────────────────────────────────────────────────
+archive_avail_kb=$(df -k "$ARCHIVE_DIR" 2>/dev/null | tail -1 | awk '{print $4}')
+if [ "${archive_avail_kb:-0}" -lt 1048576 ]; then
+    warn "Archive volume has less than 1 GB free — backups may fail"
+fi
+
 # ── SSH / SCP helpers ────────────────────────────────────────────────────────
-# SCP uses -P (uppercase) for port, not -p (which means "preserve times")
-SCP_OPTS=$(echo "$SSH_OPTS" | sed 's/-p /-P /g')
+SCP_OPTS="$SSH_OPTS"
 
 remote() {
     # shellcheck disable=SC2086
@@ -143,7 +149,7 @@ METAEOF
     copied=$((copied + 1))
     batch_count=$((batch_count + 1))
 
-    # Pause between batches to avoid overwhelming the CloudKey
+    # Pause between batches to avoid overwhelming the Protect device
     if [ "$batch_count" -ge "$BATCH_SIZE" ]; then
         debug "Batch pause: ${BATCH_DELAY}s"
         sleep "$BATCH_DELAY"
@@ -238,3 +244,4 @@ log "Archived ${archived} file(s) to ${ARCHIVE_DIR}"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived}"
+date +%s > /tmp/backup-last-success

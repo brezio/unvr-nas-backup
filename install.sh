@@ -40,6 +40,11 @@ if [ -z "$protect_host" ]; then
 fi
 
 echo
+echo "Enter the SSH user for your Protect device (root for most devices):"
+read -rp "  PROTECT_SSH_USER [root]: " ssh_user
+ssh_user="${ssh_user:-root}"
+
+echo
 echo "Enter the host path for the archive directory:"
 echo "  (This is where .mp4 files will be stored on the NAS)"
 read -rp "  ARCHIVE_PATH: " archive_path
@@ -61,6 +66,7 @@ cron_schedule="${cron_schedule:-*/15 * * * *}"
 # Generate .env
 cp .env.example .env
 sed -i "s|^PROTECT_HOST=.*|PROTECT_HOST=${protect_host}|" .env
+sed -i "s|^PROTECT_SSH_USER=.*|PROTECT_SSH_USER=${ssh_user}|" .env
 sed -i "s|^ARCHIVE_PATH=.*|ARCHIVE_PATH=${archive_path}|" .env
 sed -i "s|^TZ=.*|TZ=${tz}|" .env
 sed -i "s|^CRON_SCHEDULE=.*|CRON_SCHEDULE=${cron_schedule}|" .env
@@ -77,13 +83,13 @@ if [ ! -d "$archive_path" ]; then
 fi
 
 # Test SSH
-echo "Testing SSH to ${protect_host}..."
+echo "Testing SSH to ${ssh_user}@${protect_host}..."
 ssh_key_path="${SSH_KEY_PATH:-$HOME/.ssh}"
-if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "root@${protect_host}" "echo ok" &>/dev/null; then
+if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$(ls "${ssh_key_path}"/id_ed25519 "${ssh_key_path}"/id_rsa "${ssh_key_path}"/id_ecdsa 2>/dev/null | head -1)" "${ssh_user}@${protect_host}" "echo ok" &>/dev/null; then
     echo "SSH connection OK"
 else
-    echo "WARNING: Cannot SSH to root@${protect_host}"
-    echo "Make sure your SSH key is authorized on the Protect device before starting."
+    echo "WARNING: Cannot SSH to ${ssh_user}@${protect_host}"
+    echo "Make sure your SSH key in ${ssh_key_path} is authorized on the Protect device before starting."
     echo
 fi
 

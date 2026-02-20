@@ -60,7 +60,7 @@ if [ -d "$by_camera" ]; then
             cam_name=$(basename "$cam_dir")
             cam_files=$(find "$cam_dir" -name '*.mp4' -type f 2>/dev/null | wc -l)
             cam_size=$(du -sh "$cam_dir" 2>/dev/null | cut -f1)
-            latest=$(find "$cam_dir" -name '*.mp4' -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+            latest=$(find "$cam_dir" -name '*.mp4' -type f -exec ls -t {} + 2>/dev/null | head -1)
             latest_name=$(basename "$latest" 2>/dev/null || echo "—")
             printf "  %-30s %4d files  %8s  latest: %s\n" "$cam_name" "$cam_files" "$cam_size" "$latest_name"
         done

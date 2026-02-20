@@ -8,10 +8,10 @@ Dockerized backup system that pulls continuous surveillance video from a UniFi P
 
 ```
 NAS (Docker)                       Protect Device (CloudKey, UCG, UDM, UNVR, etc.)
-┌────────────────────────┐         ┌─────────────────────┐
-│  cron → backup.sh      │── SSH ─▶│  PostgreSQL :5433    │
-│                        │         │  .ubv video files    │
-│  1. Query DB for files │         └─────────────────────┘
+┌────────────────────────┐         ┌─────────────────────────┐
+│  cron → backup.sh      │── SSH ─▶│  PostgreSQL :5433        │
+│                        │         │  .ubv video files        │
+│  1. Query DB for files │         └─────────────────────────┘
 │  2. SCP .ubv to staging│
 │  3. Remux → .mp4       │
 │  4. Rename with camera │
@@ -20,6 +20,12 @@ NAS (Docker)                       Protect Device (CloudKey, UCG, UDM, UNVR, etc
 │     /CamName/date/     │
 └────────────────────────┘
 ```
+
+## Prerequisites
+
+- Docker and Docker Compose on the NAS (x86_64 or ARM64)
+- SSH key-based access from the NAS to the Protect device (`ssh root@<host>` must work without a password)
+- UniFi Protect running with PostgreSQL on port 5433
 
 ## Quick start
 
@@ -53,20 +59,21 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 | Variable | Default | Description |
 |---|---|---|
 | `PROTECT_HOST` | *(required)* | Hostname or IP of your Protect device |
-| `PROTECT_SSH_USER` | `root` | SSH user |
-| `PROTECT_SSH_PORT` | `22` | SSH port |
-| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the device |
+| `PROTECT_SSH_USER` | `root` | SSH user (`root` on most devices, may differ on standalone UNVRs) |
+| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the device (standard on all known devices) |
 | `PROTECT_DB_PORT` | `5433` | PostgreSQL port |
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
-| `BACKUP_HOURS` | `1` | How many hours back to look for recordings |
+| `BACKUP_HOURS` | `1` | How many hours back to look for recordings. Set this to at least 2x your cron interval so recordings that finish between runs are not missed. |
 | `BATCH_SIZE` | `5` | Number of files to SCP before pausing |
 | `BATCH_DELAY` | `30` | Seconds to pause between SCP batches |
 | `ARCHIVE_PATH` | *(required)* | Host path for the archive volume mount |
 | `SSH_KEY_PATH` | `~/.ssh` | Host path to SSH keys (mounted read-only) |
-| `CRON_SCHEDULE` | `*/15 * * * *` | Cron expression for backup frequency |
+| `CRON_SCHEDULE` | `*/15 * * * *` | Cron expression for backup frequency (do not quote this value) |
 | `RUN_ON_START` | `true` | Run a backup immediately on container start |
-| `TZ` | `UTC` | Timezone |
+| `TZ` | `UTC` | Timezone for log messages. Archive filenames always use UTC regardless of this setting. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+
+> **Disk usage**: Continuous recording generates roughly 10–20 GB per camera per day depending on resolution and scene activity. Plan your archive storage accordingly.
 
 ## Compatibility
 
@@ -81,12 +88,6 @@ Tested and confirmed working on:
 | UniFi NVR (UNVR, UNVR-Pro, etc.) | Likely compatible — testers welcome |
 
 Should work on any device running UniFi Protect with SSH access, PostgreSQL on port 5433, and `.ubv` video files at `/srv/unifi-protect/video`. If you've tested on a device not listed here, please [open an issue](https://github.com/Ozark-Connect/unvr-nas-backup/issues) to let us know.
-
-## Prerequisites
-
-- Docker and Docker Compose on the NAS (x86_64 or ARM64)
-- SSH key-based access from the NAS to the Protect device (`ssh root@<host>` must work without a password)
-- UniFi Protect running with PostgreSQL on port 5433
 
 ## Archive structure
 
@@ -111,12 +112,14 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
         └── ...
 ```
 
+> **Note:** The `by-date` directory uses symlinks, which may not be visible when browsing via SMB/Windows shares. The `by-camera` directory always works directly.
+
 ## Troubleshooting
 
 - **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the Protect device. The container copies keys to fix permissions automatically.
 - **No recordings found**: Increase `BACKUP_HOURS` or check that the device has active recordings. Only `type=rotating` and `active=false` files are selected.
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
-- **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run.
+- **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run. The backup script warns when archive space drops below 1 GB.
 
 ## Acknowledgments
 

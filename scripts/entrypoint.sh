@@ -3,7 +3,6 @@ set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROTECT_SSH_USER="${PROTECT_SSH_USER:-root}"
-PROTECT_SSH_PORT="${PROTECT_SSH_PORT:-22}"
 PROTECT_VIDEO_PATH="${PROTECT_VIDEO_PATH:-/srv/unifi-protect/video}"
 PROTECT_DB_PORT="${PROTECT_DB_PORT:-5433}"
 PROTECT_DB_NAME="${PROTECT_DB_NAME:-unifi-protect}"
@@ -35,9 +34,6 @@ if [ -d "/root/.ssh-mount" ]; then
     cp -a /root/.ssh-mount/* "$SSH_DIR/" 2>/dev/null || true
     chmod 700 "$SSH_DIR"
     find "$SSH_DIR" -type f -exec chmod 600 {} \;
-    # Ensure known_hosts is writable
-    touch "$SSH_DIR/known_hosts"
-    chmod 644 "$SSH_DIR/known_hosts"
 else
     die "SSH key mount not found at /root/.ssh-mount"
 fi
@@ -45,7 +41,10 @@ fi
 export SSH_DIR
 
 # ── Detect SSH key and test connectivity ─────────────────────────────────────
-SSH_BASE_OPTS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${SSH_DIR}/known_hosts -o BatchMode=yes -p ${PROTECT_SSH_PORT}"
+# Persist known_hosts in the staging volume so host keys survive container restarts
+SSH_KNOWN_HOSTS="/staging/.ssh_known_hosts"
+touch "$SSH_KNOWN_HOSTS"
+SSH_BASE_OPTS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${SSH_KNOWN_HOSTS} -o BatchMode=yes"
 SSH_CONNECTED=false
 
 for key_name in id_ed25519 id_rsa id_ecdsa id_dsa; do
@@ -53,7 +52,7 @@ for key_name in id_ed25519 id_rsa id_ecdsa id_dsa; do
     [ -f "$key_path" ] || continue
 
     SSH_OPTS="${SSH_BASE_OPTS} -i ${key_path}"
-    log "Testing SSH to ${PROTECT_SSH_USER}@${PROTECT_HOST}:${PROTECT_SSH_PORT} (${key_name})..."
+    log "Testing SSH to ${PROTECT_SSH_USER}@${PROTECT_HOST} (${key_name})..."
     # shellcheck disable=SC2086
     if ssh $SSH_OPTS "${PROTECT_SSH_USER}@${PROTECT_HOST}" "echo ok" >/dev/null 2>&1; then
         log "SSH connection OK (using ${key_name})"
@@ -63,7 +62,7 @@ for key_name in id_ed25519 id_rsa id_ecdsa id_dsa; do
 done
 
 if [ "$SSH_CONNECTED" != "true" ]; then
-    die "Cannot SSH to ${PROTECT_SSH_USER}@${PROTECT_HOST}:${PROTECT_SSH_PORT} — no working key found"
+    die "Cannot SSH to ${PROTECT_SSH_USER}@${PROTECT_HOST} — no working key found"
 fi
 
 export SSH_OPTS

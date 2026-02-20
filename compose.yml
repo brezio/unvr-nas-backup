@@ -12,11 +12,11 @@ services:
     tmpfs:
       - /tmp:size=2G
     healthcheck:
-      test: ["CMD", "pgrep", "-x", "cron"]
+      test: ["CMD", "sh", "-c", "pgrep -x cron && [ -f /tmp/backup-last-success ]"]
       interval: 60s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 120s
     logging:
       driver: json-file
       options:
