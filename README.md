@@ -203,6 +203,14 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
   There is no automatic pruning yet (see [Future features](#future-features)). You are responsible for managing retention (e.g., deleting old date folders, NAS-level quotas, or a cron job). Staging is cleaned after each run.
 - **Permissions**: The installer needs Docker access and write permissions to the archive path - on most NAS systems you're already root. The container runs as root internally for cron, SSH key handling, and volume writes. It does not expose any ports or accept inbound connections.
 
+## Performance
+
+The backup process has negligible impact on the Protect device. We profiled a CloudKey Gen2+ while backups ran every minute and the device sat at 70-90% CPU idle throughout. The database query finishes so fast it doesn't even register at 10-second sampling intervals, and the SCP file transfer (the heaviest part) briefly uses one core for SSH encryption before dropping back to baseline. Memory, swap, and PostgreSQL activity are unchanged during backups.
+
+The project defaults to AES-128-GCM for SSH encryption, which takes advantage of hardware AES extensions present on CloudKey Gen2+, UCG-Fiber, and likely all current UniFi Protect devices. This reduces total CPU-time per transfer by ~27% compared to the default ChaCha20-Poly1305 cipher.
+
+See [docs/performance.md](docs/performance.md) for the full profiling data, cipher benchmarks, and methodology.
+
 ## Future features
 
 - **Archive pruning** - Automatically delete old recordings from the NAS archive based on configurable retention policies (per-camera, per-channel, minimum free space triggers, dry-run mode).

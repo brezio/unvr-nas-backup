@@ -44,7 +44,7 @@ export SSH_DIR
 # Persist known_hosts in the staging volume so host keys survive container restarts
 SSH_KNOWN_HOSTS="/staging/.ssh_known_hosts"
 touch "$SSH_KNOWN_HOSTS"
-SSH_BASE_OPTS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${SSH_KNOWN_HOSTS} -o BatchMode=yes"
+SSH_BASE_OPTS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${SSH_KNOWN_HOSTS} -o BatchMode=yes -c aes128-gcm@openssh.com"
 SSH_CONNECTED=false
 
 for key_name in id_ed25519 id_rsa id_ecdsa id_dsa; do
