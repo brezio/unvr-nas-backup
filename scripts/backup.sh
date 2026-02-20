@@ -187,28 +187,25 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
     # The original .ubv filename (from the meta sidecar)
     ubv_basename=$(basename "$meta_file" .meta)
 
-    # Find the remuxed .mp4 — remux outputs files based on the input name
-    # The remux tool typically outputs <input_basename>_0_rotating_<timestamp>.mp4
-    # but the exact pattern depends on the version; we match by prefix
+    # Find the remuxed .mp4 — remux replaces the epoch timestamp with an ISO
+    # timestamp, so input  "MAC_0_rotating_1771552658462.ubv" becomes
+    # output "MAC_0_rotating_2026-02-20T01.57.33Z.mp4". Match on the
+    # MAC_channel_type prefix which is shared between input and output.
     mp4_file=""
-    ubv_stem="${ubv_basename%.ubv}"
+    # Extract prefix: everything up to and including the type (e.g. "1C6A1B84F76E_0_rotating_")
+    ubv_prefix=$(echo "$ubv_basename" | sed 's/\(.*_rotating_\).*/\1/')
     for candidate in "${REMUX_DIR}/"*.mp4; do
         [ -f "$candidate" ] || continue
         candidate_base=$(basename "$candidate")
-        if [[ "$candidate_base" == "${ubv_stem}"* ]]; then
+        if [[ "$candidate_base" == "${ubv_prefix}"* ]]; then
             mp4_file="$candidate"
             break
         fi
     done
 
     if [ -z "$mp4_file" ]; then
-        # Fallback: check if remux output matches exactly
-        if [ -f "${REMUX_DIR}/${ubv_stem}.mp4" ]; then
-            mp4_file="${REMUX_DIR}/${ubv_stem}.mp4"
-        else
-            warn "No .mp4 found for ${ubv_basename} — skipping"
-            continue
-        fi
+        warn "No .mp4 found for ${ubv_basename} — skipping"
+        continue
     fi
 
     # Build archive path
