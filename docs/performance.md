@@ -57,6 +57,23 @@ Columns: overall CPU usage, I/O wait percentage, used memory (MB), swap usage (M
 
 During SCP transfers, CPU rises from a baseline of ~10% to ~20-28% (one core handling SSH encryption) and disk utilization spikes to ~30%. Memory, swap, I/O wait, and PostgreSQL activity are all unchanged. The device sits at 70-90% CPU idle throughout, even at this aggressive 1-minute polling interval.
 
+## Impact on UniFi system processes
+
+The overall CPU numbers above show the device has plenty of headroom, but they don't answer a more specific question: are any individual UniFi processes getting starved? To find out, we ran 4 back-to-back 1 GB SCP transfers (using AES-128-GCM) while sampling per-process CPU on the CloudKey every 2 seconds.
+
+Every UniFi system process held perfectly steady:
+
+| Process | Normal CPU% | During transfers | After transfers |
+|---|---|---|---|
+| `ms` (video transcoding) | 33.7% | 33.7% | 33.7% |
+| `unifi-protect` | 7.9% | 7.9% | 7.9% |
+| `mst` | 6.9% | 6.9% | 6.9% |
+| `unifi-core` | 4.8% | 4.8% | 4.8% |
+| `ck-ui` | 3.7% | 3.7% | 3.7% |
+| `msr_main` | 2.8% | 2.8% | 2.8% |
+
+Zero measurable impact across all four transfers. The `sshd` and `sftp-server` processes for the transfer peaked at ~90% and ~55% respectively (cumulative CPU-time percentages reported by `ps`), but the Linux scheduler spread that work to available cores without starving anything. Nothing is pinned - the scheduler pushed the heavy SSH work mostly to cores 4-7 while the UniFi processes stayed mostly on 0-3, though everything floats freely. Even when `sftp-server` shared a core with `ms` (the heaviest UniFi process at 33.7%), `ms` didn't budge.
+
 ## Cipher optimization
 
 The default SSH cipher negotiated between most systems is ChaCha20-Poly1305, a software-only stream cipher. Both the CloudKey Gen2+ and UCG-Fiber have ARMv8 hardware AES extensions (`aes` flag in `/proc/cpuinfo`), which means AES-128-GCM can be offloaded to dedicated silicon instead of running in software.
@@ -77,7 +94,7 @@ We then validated this in production by running back-to-back A/B tests - transfe
 | Cipher | Samples (1 GB each) | Avg time | Throughput |
 |---|---|---|---|
 | ChaCha20-Poly1305 | 19s, 19s, 20s, 20s | **~20s** | ~51 MB/s |
-| AES-128-GCM | 15s, 15s | **~15s** | ~67 MB/s |
+| AES-128-GCM | 15s, 15s, 15s | **~15s** | ~67 MB/s |
 
 The production results confirm the benchmark: AES-GCM transfers complete ~25% faster per file. The improvement comes from the ARMv8 hardware AES extensions handling the cipher work in silicon rather than software.
 
