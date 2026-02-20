@@ -192,8 +192,8 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
 - **Container shows unhealthy**: This is normal until the first successful backup completes. With `RUN_ON_START=true` (the default), this resolves within a few minutes of starting.
 - **Disk space**: The backup script logs two levels of disk space warnings that you can use to set up alerts (e.g., Docker log monitoring, webhook, etc.):
-  - `WARN: Archive volume has less than 100 GB free` - time to plan cleanup
-  - `WARN: CRITICAL: Archive volume has less than 10 GB free` - backups may start failing
+  - `[backup] ... WARN: Archive volume has less than 100 GB free` - time to plan cleanup
+  - `[backup] ... CRITICAL: Archive volume has less than 10 GB free` - backups may start failing
 
   There is no automatic pruning yet (coming soon). You are responsible for managing retention (e.g., deleting old date folders, NAS-level quotas, or a cron job). Staging is cleaned after each run.
 - **Permissions**: The installer needs Docker access and write permissions to the archive path - on most NAS systems you're already root. The container runs as root internally for cron, SSH key handling, and volume writes. It does not expose any ports or accept inbound connections.

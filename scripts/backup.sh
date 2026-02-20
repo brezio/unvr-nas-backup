@@ -52,7 +52,7 @@ mkdir -p "${STAGING_DIR}/ubv" "$REMUX_DIR"
 # ── Disk space check ────────────────────────────────────────────────────────
 archive_avail_kb=$(df -k "$ARCHIVE_DIR" 2>/dev/null | tail -1 | awk '{print $4}')
 if [ "${archive_avail_kb:-0}" -lt 10485760 ]; then
-    warn "CRITICAL: Archive volume has less than 10 GB free — backups may fail"
+    log "CRITICAL: Archive volume has less than 10 GB free — backups may fail"
 elif [ "${archive_avail_kb:-0}" -lt 104857600 ]; then
     warn "Archive volume has less than 100 GB free — consider pruning old recordings"
 fi
