@@ -76,10 +76,10 @@ Based on this, the project defaults to `-c aes128-gcm@openssh.com` in its SSH op
 
 ## Tested devices
 
-| Device | CPU | Hardware AES | OpenSSH |
-|---|---|---|---|
-| CloudKey Gen2+ | AArch64 (Cortex-A53), 8 cores | Yes | 8.4p1 |
-| UCG-Fiber | AArch64, 8 cores | Yes | 8.4p1 |
+| Device | CPU | RAM | Hardware AES | OpenSSH |
+|---|---|---|---|---|
+| CloudKey Gen2+ | AArch64 (Cortex-A53), 8 cores | 3 GB | Yes | 8.4p1 |
+| UCG-Fiber | AArch64 (Cortex-A73), 4 cores | 3 GB | Yes | 8.4p1 |
 
 ## Bottom line
 
