@@ -1,4 +1,13 @@
+<p align="center">
+  <img src="docs/images/ozark-connect-logo.png" alt="Ozark Connect" width="200">
+</p>
+
 # unvr-nas-backup
+
+[![GitHub Release](https://img.shields.io/github/v/release/Ozark-Connect/unvr-nas-backup)](https://github.com/Ozark-Connect/unvr-nas-backup/releases)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Ozark-Connect/unvr-nas-backup)](https://github.com/Ozark-Connect/unvr-nas-backup/commits)
+[![GitHub Stars](https://img.shields.io/github/stars/Ozark-Connect/unvr-nas-backup)](https://github.com/Ozark-Connect/unvr-nas-backup/stargazers)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Ozark-Connect/unvr-nas-backup/blob/main/LICENSE)
 
 Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
 
@@ -124,6 +133,10 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 ## Acknowledgments
 
 This project uses [unifi-protect-remux](https://github.com/petergeneric/unifi-protect-remux) by Peter Wright for converting `.ubv` video files to `.mp4`. The remux binary is licensed under [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) and is downloaded at build time — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
+
+## Also from Ozark Connect
+
+If you find this useful, check out **[Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer)** — a self-hosted UniFi network analysis platform with security auditing, Wi-Fi optimization, LAN speed testing with Layer 2 path tracing, adaptive SQM, coverage mapping, and more.
 
 ## Sponsor
 
