@@ -14,6 +14,7 @@ BACKUP_HOURS="${BACKUP_HOURS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-5}"
 BATCH_DELAY="${BATCH_DELAY:-30}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
+BACKUP_CHANNELS="${BACKUP_CHANNELS:-0}"
 SSH_DIR="${SSH_DIR:-/tmp/.ssh-copy}"
 
 STAGING_DIR="/staging"
@@ -26,6 +27,48 @@ log()   { echo "[backup] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 debug() { [ "$LOG_LEVEL" = "debug" ] && log "DEBUG: $*"; return 0; }
 warn()  { log "WARN: $*"; }
 die()   { log "ERROR: $*" >&2; exit 1; }
+
+# Channel label for archive paths (channel 0 = main, no label)
+channel_label() {
+    case "$1" in
+        0) ;;
+        2) echo "low-quality" ;;
+        *) echo "ch$1" ;;
+    esac
+}
+
+# Build archive path for a recording.
+# Sets globals: archive_subdir, final_name, final_path, date_str, safe_cam
+build_archive_path() {
+    local cam="$1" start="$2" end="$3" ch="$4"
+    local start_sec=$((start / 1000))
+    local end_sec=$((end / 1000))
+    local start_time end_time label
+    date_str=$(date -u -d "@${start_sec}" '+%Y-%m-%d')
+    start_time=$(date -u -d "@${start_sec}" '+%H-%M-%S')
+    end_time=$(date -u -d "@${end_sec}" '+%H-%M-%S')
+    safe_cam=$(echo "$cam" | tr ' /' '_-')
+    label=$(channel_label "$ch")
+
+    if [ -z "$label" ]; then
+        final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}.mp4"
+        archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${date_str}"
+    else
+        final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}_${label}.mp4"
+        archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${label}/${date_str}"
+    fi
+    final_path="${archive_subdir}/${final_name}"
+}
+
+# ── Validate BACKUP_CHANNELS → SQL IN clause ────────────────────────────────
+CHANNEL_LIST=""
+IFS=',' read -ra _channels <<< "$BACKUP_CHANNELS"
+for _ch in "${_channels[@]}"; do
+    _ch=$(echo "$_ch" | tr -dc '0-9')
+    [ -n "$_ch" ] && CHANNEL_LIST="${CHANNEL_LIST:+$CHANNEL_LIST,}$_ch"
+done
+unset _channels _ch
+[ -n "$CHANNEL_LIST" ] || die "BACKUP_CHANNELS is empty or invalid: ${BACKUP_CHANNELS}"
 
 # ── Lock (atomic via flock) ──────────────────────────────────────────────────
 exec 9>"$LOCKFILE"
@@ -71,7 +114,7 @@ remote_scp() {
 }
 
 # ── Step 1: Query DB for recent recording files ─────────────────────────────
-log "Querying recordings from the last ${BACKUP_HOURS}h..."
+log "Querying recordings from the last ${BACKUP_HOURS}h (channels: ${CHANNEL_LIST})..."
 
 LOOKBACK_MS=$((BACKUP_HOURS * 3600 * 1000))
 
@@ -83,6 +126,7 @@ COPY (
     WHERE rf.type = 'rotating'
       AND rf.active = false
       AND rf."end" > (extract(epoch from now()) * 1000 - ${LOOKBACK_MS})
+      AND rf.channel IN (${CHANNEL_LIST})
     ORDER BY rf."end" ASC
 ) TO STDOUT WITH CSV HEADER;
 EOSQL
@@ -109,15 +153,7 @@ while IFS=',' read -r cam_name file folder start_ts end_ts channel; do
     local_ubv="${STAGING_DIR}/ubv/${file}"
 
     # Build final archive path to check for duplicates
-    start_sec=$((start_ts / 1000))
-    end_sec=$((end_ts / 1000))
-    date_str=$(date -u -d "@${start_sec}" '+%Y-%m-%d')
-    start_time=$(date -u -d "@${start_sec}" '+%H-%M-%S')
-    end_time=$(date -u -d "@${end_sec}" '+%H-%M-%S')
-    safe_cam=$(echo "$cam_name" | tr ' /' '_-')
-    final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}.mp4"
-    archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${date_str}"
-    final_path="${archive_subdir}/${final_name}"
+    build_archive_path "$cam_name" "$start_ts" "$end_ts" "$channel"
 
     # Skip if already archived
     if [ -f "$final_path" ]; then
@@ -219,26 +255,25 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
     fi
 
     # Build archive path
-    start_sec=$((start_ts / 1000))
-    end_sec=$((end_ts / 1000))
-    date_str=$(date -u -d "@${start_sec}" '+%Y-%m-%d')
-    start_time=$(date -u -d "@${start_sec}" '+%H-%M-%S')
-    end_time=$(date -u -d "@${end_sec}" '+%H-%M-%S')
-    safe_cam=$(echo "$cam_name" | tr ' /' '_-')
-
-    final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}.mp4"
-    archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${date_str}"
+    build_archive_path "$cam_name" "$start_ts" "$end_ts" "$channel"
 
     mkdir -p "$archive_subdir"
     mv "$mp4_file" "${archive_subdir}/${final_name}"
     debug "Archived: ${archive_subdir}/${final_name}"
 
-    # Create by-date symlink: /archive/by-date/YYYY-MM-DD/CameraName → ../../by-camera/CameraName/YYYY-MM-DD
-    bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
+    # Create by-date symlink
+    label=$(channel_label "$channel")
+    if [ -z "$label" ]; then
+        bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
+        bydate_target="../../by-camera/${safe_cam}/${date_str}"
+    else
+        bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}-${label}"
+        bydate_target="../../by-camera/${safe_cam}/${label}/${date_str}"
+    fi
     if [ ! -L "$bydate_link" ]; then
         mkdir -p "${ARCHIVE_DIR}/by-date/${date_str}"
-        ln -s "../../by-camera/${safe_cam}/${date_str}" "$bydate_link"
-        debug "Symlinked: by-date/${date_str}/${safe_cam}"
+        ln -s "$bydate_target" "$bydate_link"
+        debug "Symlinked: by-date/${date_str}/$(basename "$bydate_link")"
     fi
 
     archived=$((archived + 1))
