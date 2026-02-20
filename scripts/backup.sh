@@ -82,8 +82,8 @@ COPY (
     JOIN "recordingFiles" rf ON c.id = rf."cameraId"
     WHERE rf.type = 'rotating'
       AND rf.active = false
-      AND rf.start > (extract(epoch from now()) * 1000 - ${LOOKBACK_MS})
-    ORDER BY rf.start ASC
+      AND rf."end" > (extract(epoch from now()) * 1000 - ${LOOKBACK_MS})
+    ORDER BY rf."end" ASC
 ) TO STDOUT WITH CSV HEADER;
 EOSQL
 ) || die "DB query failed"

@@ -11,7 +11,7 @@
 
 Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
 
-> **Note:** Recordings can only be backed up after the Protect device finishes writing them, so there is an inherent delay (typically one recording segment, ~1 GB per file). This is **not** real-time replication - it is near-real-time archival. For the best coverage, pair this tool with UniFi Protect's built-in **Continuous Archiving** (UI Labs) feature, which handles detection event clips. As far as we know, this is the only open-source tool that backs up continuous recording video.
+> **Note:** Recordings can only be backed up after the Protect device finishes writing them. UniFi Protect writes ~1 GB `.ubv` segments; busy cameras close segments quickly, but **low-activity cameras may take many hours** to fill a segment, so there can be a significant delay before those recordings appear in the archive. This is **not** real-time replication - it is near-real-time archival. For the best coverage, pair this tool with UniFi Protect's built-in **Continuous Archiving** (UI Labs) feature, which handles detection event clips. As far as we know, this is the only open-source tool that backs up continuous recording video.
 
 ## How it works
 
@@ -134,7 +134,7 @@ Your archive directory is **not** deleted automatically. Remove it manually if y
 | `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Fallback video path if the DB-reported folder is not accessible |
 | `PROTECT_DB_PORT` | `5433` | PostgreSQL port |
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
-| `BACKUP_HOURS` | `1` | How many hours back to look for recordings. Set this to at least 2x your cron interval so recordings that finish between runs are not missed. |
+| `BACKUP_HOURS` | `1` | How many hours back to look for completed recordings (based on end time). Set this to at least 2x your cron interval so recordings that finish between runs are not missed. |
 | `BATCH_SIZE` | `5` | Number of files to SCP before pausing |
 | `BATCH_DELAY` | `30` | Seconds to pause between SCP batches |
 | `ARCHIVE_PATH` | *(required)* | Host path for the archive volume mount |
