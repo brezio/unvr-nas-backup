@@ -77,7 +77,7 @@ We then validated this in production by running back-to-back A/B tests - transfe
 | Cipher | Samples (1 GB each) | Avg time | Throughput |
 |---|---|---|---|
 | ChaCha20-Poly1305 | 19s, 19s, 20s, 20s | **~20s** | ~51 MB/s |
-| AES-128-GCM | 15s | **~15s** | ~67 MB/s |
+| AES-128-GCM | 15s, 15s | **~15s** | ~67 MB/s |
 
 The production results confirm the benchmark: AES-GCM transfers complete ~25% faster per file. The improvement comes from the ARMv8 hardware AES extensions handling the cipher work in silicon rather than software.
 
