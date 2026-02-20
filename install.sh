@@ -4,8 +4,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+REPO_URL="https://raw.githubusercontent.com/Ozark-Connect/unvr-nas-backup/main"
+
 echo "=== unvr-nas-backup installer ==="
 echo
+
+# Download compose.yml if not present (standalone install)
+if [ ! -f compose.yml ]; then
+    echo "Downloading compose.yml..."
+    curl -fsSL "${REPO_URL}/compose.yml" -o compose.yml
+fi
 
 # Check Docker
 if ! command -v docker &>/dev/null; then

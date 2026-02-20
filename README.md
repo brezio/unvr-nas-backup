@@ -54,21 +54,31 @@ The container mounts your key from `SSH_KEY_PATH` (defaults to `~/.ssh`) and use
 
 ## Quick start
 
+**Option 1** - Standalone install (no git required):
 ```bash
-# Clone to NAS
+mkdir -p /opt/unvr-nas-backup && cd /opt/unvr-nas-backup
+curl -fsSLO https://raw.githubusercontent.com/Ozark-Connect/unvr-nas-backup/main/install.sh
+chmod +x install.sh && ./install.sh
+```
+
+**Option 2** - Clone the repo (includes helper scripts for status, updates, etc.):
+```bash
 git clone https://github.com/Ozark-Connect/unvr-nas-backup.git /opt/unvr-nas-backup
 cd /opt/unvr-nas-backup
-
-# Interactive install - prompts for host and archive path, pulls image and starts
 ./install.sh
+```
 
-# Or manually:
+The installer prompts for your Protect device host, archive path, and other settings. It downloads `compose.yml` if needed, pulls the pre-built image from GHCR, and starts the container.
+
+**Manual setup** (no installer):
+```bash
+mkdir -p /opt/unvr-nas-backup && cd /opt/unvr-nas-backup
+curl -fsSLO https://raw.githubusercontent.com/Ozark-Connect/unvr-nas-backup/main/compose.yml
+curl -fsSLO https://raw.githubusercontent.com/Ozark-Connect/unvr-nas-backup/main/.env.example
 cp .env.example .env
 # Edit .env - set PROTECT_HOST and ARCHIVE_PATH at minimum
 docker compose up -d
 ```
-
-The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas-backup:latest`. To build locally instead, run `docker compose build`.
 
 ## Helper scripts
 
@@ -160,7 +170,7 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 - **No recordings found**: Increase `BACKUP_HOURS` or check that the device has active recordings. Only `type=rotating` and `active=false` files are selected.
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
 - **Container shows unhealthy**: This is normal until the first successful backup completes. With `RUN_ON_START=true` (the default), this resolves within a few minutes of starting.
-- **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run. The backup script warns when archive space drops below 1 GB.
+- **Disk space**: The backup script warns when archive space drops below 100 GB. There is no automatic pruning - you are responsible for managing retention (e.g., deleting old date folders, NAS-level quotas, or a cron job). Staging is cleaned after each run.
 - **Permissions**: The installer needs Docker access and write permissions to the archive path - on most NAS systems you're already root. The container runs as root internally for cron, SSH key handling, and volume writes. It does not expose any ports or accept inbound connections.
 
 ## Acknowledgments
