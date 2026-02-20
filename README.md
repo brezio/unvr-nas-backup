@@ -39,7 +39,7 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 
 ### Setting up SSH access
 
-1. **Enable SSH on your Protect device**: In your UniFi Console, go to **Settings -> Control Plane -> Console -> SSH** and enable it. Note the username and password you set here.
+1. **Enable SSH on your Protect device**: In your UniFi Console, go to **Settings -> Control Plane -> Console -> SSH** and enable it. Note the password you set here. The default SSH username is root for Console devices.
 
 2. **Run the installer** - it will detect that SSH key auth isn't set up and offer to configure it automatically. It generates a key if needed and copies it to your Protect device using `ssh-copy-id`. You just need to enter the SSH password once.
 
