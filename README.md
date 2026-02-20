@@ -11,7 +11,7 @@
 
 Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
 
-> **Note:** Recordings can only be backed up after the Protect device finishes writing them, so there is an inherent delay (typically one recording segment, ~1 GB per file). This is **not** real-time replication — it is near-real-time archival. For the best coverage, pair this tool with UniFi Protect's built-in **Continuous Archiving** (UI Labs) feature, which handles detection event clips. As far as we know, this is the only open-source tool that backs up continuous recording video.
+> **Note:** Recordings can only be backed up after the Protect device finishes writing them, so there is an inherent delay (typically one recording segment, ~1 GB per file). This is **not** real-time replication - it is near-real-time archival. For the best coverage, pair this tool with UniFi Protect's built-in **Continuous Archiving** (UI Labs) feature, which handles detection event clips. As far as we know, this is the only open-source tool that backs up continuous recording video.
 
 ## How it works
 
@@ -43,12 +43,12 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 git clone https://github.com/Ozark-Connect/unvr-nas-backup.git /opt/unvr-nas-backup
 cd /opt/unvr-nas-backup
 
-# Interactive install — prompts for host and archive path, pulls image and starts
+# Interactive install - prompts for host and archive path, pulls image and starts
 ./install.sh
 
 # Or manually:
 cp .env.example .env
-# Edit .env — set PROTECT_HOST and ARCHIVE_PATH at minimum
+# Edit .env - set PROTECT_HOST and ARCHIVE_PATH at minimum
 docker compose up -d
 ```
 
@@ -58,7 +58,7 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 
 | Script | Description |
 |---|---|
-| `./install.sh` | First-time setup — creates `.env`, tests SSH, pulls image and starts the container |
+| `./install.sh` | First-time setup - creates `.env`, tests SSH, pulls image and starts the container |
 | `./scripts/status.sh` | Shows backup health: last run, archive stats, disk usage, container/cron status |
 | `./scripts/run-now.sh` | Triggers an immediate backup without waiting for cron |
 | `./scripts/update.sh` | Pulls latest code and image, and restarts the container |
@@ -82,7 +82,7 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 | `TZ` | `UTC` | Timezone for log messages. Archive filenames always use UTC regardless of this setting. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
-> **Disk usage**: Continuous recording generates roughly 10–20 GB per camera per day depending on resolution and scene activity. Plan your archive storage accordingly.
+> **Disk usage**: Continuous recording generates roughly 10-20 GB per camera per day depending on resolution and scene activity. Plan your archive storage accordingly.
 
 ## Compatibility
 
@@ -92,9 +92,9 @@ Tested and confirmed working on:
 |---|---|
 | UniFi CloudKey Gen2+ | Tested |
 | UniFi Cloud Gateway (UCG-Fiber, UCG-Ultra, UCG-Max, etc.) | Tested |
-| UniFi Dream Machine (UDM, UDM-Pro, UDM-SE, etc.) | Likely compatible — testers welcome |
-| UniFi Dream Router (UDR, etc.) | Likely compatible — testers welcome |
-| UniFi NVR (UNVR, UNVR-Pro, etc.) | Likely compatible — testers welcome |
+| UniFi Dream Machine (UDM, UDM-Pro, UDM-SE, etc.) | Likely compatible - testers welcome |
+| UniFi Dream Router (UDR, etc.) | Likely compatible - testers welcome |
+| UniFi NVR (UNVR, UNVR-Pro, etc.) | Likely compatible - testers welcome |
 
 Should work on any device running UniFi Protect with SSH access, PostgreSQL on port 5433, and `.ubv` video files at `/srv/unifi-protect/video`. If you've tested on a device not listed here, please [open an issue](https://github.com/Ozark-Connect/unvr-nas-backup/issues) to let us know.
 
@@ -132,11 +132,11 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 
 ## Acknowledgments
 
-This project uses [unifi-protect-remux](https://github.com/petergeneric/unifi-protect-remux) by Peter Wright for converting `.ubv` video files to `.mp4`. The remux binary is licensed under [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) and is downloaded at build time — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
+This project uses [unifi-protect-remux](https://github.com/petergeneric/unifi-protect-remux) by Peter Wright for converting `.ubv` video files to `.mp4`. The remux binary is licensed under [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) and is downloaded at build time - see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
 
 ## Also from Ozark Connect
 
-If you find this useful, check out **[Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer)** — a self-hosted UniFi network analysis platform with security auditing, Wi-Fi optimization, LAN speed testing with Layer 2 path tracing, adaptive SQM, coverage mapping, and more.
+If you find this useful, check out **[Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer)** - a self-hosted UniFi network analysis platform with security auditing, Wi-Fi optimization, LAN speed testing with Layer 2 path tracing, adaptive SQM, coverage mapping, and more.
 
 ## Sponsor
 
@@ -144,7 +144,7 @@ If you find this project useful, consider [sponsoring the maintainer](https://gi
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT - see [LICENSE](LICENSE) for details.
 
 ---
 
