@@ -159,7 +159,9 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 - **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the Protect device. The container copies keys to fix permissions automatically.
 - **No recordings found**: Increase `BACKUP_HOURS` or check that the device has active recordings. Only `type=rotating` and `active=false` files are selected.
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
+- **Container shows unhealthy**: This is normal until the first successful backup completes. With `RUN_ON_START=true` (the default), this resolves within a few minutes of starting.
 - **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run. The backup script warns when archive space drops below 1 GB.
+- **Permissions**: The installer needs Docker access and write permissions to the archive path - on most NAS systems you're already root. The container runs as root internally for cron, SSH key handling, and volume writes. It does not expose any ports or accept inbound connections.
 
 ## Acknowledgments
 
