@@ -34,7 +34,11 @@ if [ -f .env ]; then
         docker compose pull
         docker compose up -d
         echo
-        echo "Done! Run './scripts/status.sh' to check health."
+        if [ -f ./scripts/status.sh ]; then
+            echo "Done! Run './scripts/status.sh' to check health."
+        else
+            echo "Done! Run 'docker compose logs' to check output."
+        fi
         exit 0
     fi
 fi
