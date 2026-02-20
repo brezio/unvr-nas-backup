@@ -164,7 +164,7 @@ for ubv_file in "${STAGING_DIR}/ubv/"*.ubv; do
     basename_ubv=$(basename "$ubv_file")
     debug "Remuxing: ${basename_ubv}"
 
-    if /usr/local/bin/remux --output-folder="$REMUX_DIR" --fast-start "$ubv_file" 2>&1; then
+    if /usr/local/bin/remux --output-folder="$REMUX_DIR" --fast-start true "$ubv_file" 2>&1; then
         remuxed=$((remuxed + 1))
     else
         warn "Remux failed for ${basename_ubv}"
