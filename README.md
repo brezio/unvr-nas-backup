@@ -23,22 +23,26 @@ NAS (Docker)                          CloudKey / UNVR
 
 ```bash
 # Clone to NAS
-git clone https://github.com/YOUR_USER/unvr-nas-backup.git /opt/unvr-nas-backup
+git clone https://github.com/Ozark-Connect/unvr-nas-backup.git /opt/unvr-nas-backup
 cd /opt/unvr-nas-backup
 
-# Configure
+# Interactive install — prompts for host and archive path, builds and starts
+./install.sh
+
+# Or manually:
 cp .env.example .env
 # Edit .env — set PROTECT_HOST and ARCHIVE_PATH at minimum
-
-# Create archive directory
-mkdir -p /path/to/your/archive
-
-# Start
-docker compose up -d
-
-# Watch logs
-docker compose logs -f
+docker compose build && docker compose up -d
 ```
+
+## Helper scripts
+
+| Script | Description |
+|---|---|
+| `./install.sh` | First-time setup — creates `.env`, tests SSH, builds and starts the container |
+| `./scripts/status.sh` | Shows backup health: last run, archive stats, disk usage, container/cron status |
+| `./scripts/run-now.sh` | Triggers an immediate backup without waiting for cron |
+| `./scripts/update.sh` | Pulls latest code, rebuilds the image, and restarts the container |
 
 ## Configuration
 
@@ -81,22 +85,6 @@ docker compose logs -f
 └── ...
 ```
 
-## Verification
-
-```bash
-# Check remux binary
-docker compose run --rm unvr-nas-backup remux --version
-
-# Test SSH connectivity
-docker compose run --rm unvr-nas-backup ssh -o StrictHostKeyChecking=accept-new root@<cloudkey> echo ok
-
-# Run a one-off backup
-docker compose run --rm -e RUN_ON_START=true unvr-nas-backup
-
-# Check cron is running
-docker compose exec unvr-nas-backup pgrep -x cron
-```
-
 ## Troubleshooting
 
 - **SSH fails**: Ensure your SSH key is in `SSH_KEY_PATH` and is authorized on the CloudKey. The container copies keys to fix permissions automatically.
@@ -104,6 +92,14 @@ docker compose exec unvr-nas-backup pgrep -x cron
 - **Remux fails**: Verify the `.ubv` file is complete (not still being recorded). The query filters `active=false` to prevent this.
 - **Disk space**: Monitor `/staging` (named volume) and `/archive`. Staging is cleaned after each run.
 
+## Acknowledgments
+
+This project uses [unifi-protect-remux](https://github.com/petergeneric/unifi-protect-remux) by Peter Wright for converting `.ubv` video files to `.mp4`. The remux binary is licensed under [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) and is downloaded at build time — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
+
+## Sponsor
+
+If you find this project useful, consider [sponsoring the maintainer](https://github.com/sponsors/tvancott42).
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
