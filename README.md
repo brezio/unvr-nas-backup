@@ -63,7 +63,7 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 | `BATCH_DELAY` | `30` | Seconds to pause between SCP batches |
 | `ARCHIVE_PATH` | *(required)* | Host path for the archive volume mount |
 | `SSH_KEY_PATH` | `~/.ssh` | Host path to SSH keys (mounted read-only) |
-| `CRON_SCHEDULE` | `0 * * * *` | Cron expression for backup frequency |
+| `CRON_SCHEDULE` | `*/15 * * * *` | Cron expression for backup frequency |
 | `RUN_ON_START` | `true` | Run a backup immediately on container start |
 | `TZ` | `UTC` | Timezone |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
