@@ -207,7 +207,7 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 
 The backup process has negligible impact on the Protect device. We profiled a CloudKey Gen2+ while backups ran every minute and the device sat at 70-90% CPU idle throughout. The database query finishes so fast it doesn't even register at 10-second sampling intervals, and the SCP file transfer (the heaviest part) briefly uses one core for SSH encryption before dropping back to baseline. Memory, swap, and PostgreSQL activity are unchanged during backups.
 
-The project defaults to AES-128-GCM for SSH encryption, which takes advantage of hardware AES extensions present on CloudKey Gen2+, UCG-Fiber, and likely all current UniFi Protect devices. This reduces total CPU-time per transfer by ~27% compared to the default ChaCha20-Poly1305 cipher.
+The project defaults to AES-128-GCM for SSH encryption, which takes advantage of hardware AES extensions present on CloudKey Gen2+, UCG-Fiber, and likely all current UniFi Protect devices. Peak CPU during transfers is about the same either way (one core doing cipher work), but AES-GCM finishes ~27% faster - so the device spends less total time under load per backup cycle.
 
 See [docs/performance.md](docs/performance.md) for the full profiling data, cipher benchmarks, and methodology.
 
