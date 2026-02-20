@@ -79,6 +79,21 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 | `./scripts/run-now.sh` | Triggers an immediate backup without waiting for cron |
 | `./scripts/update.sh` | Pulls latest code and image, and restarts the container |
 
+## Updating
+
+```bash
+cd /opt/unvr-nas-backup
+./scripts/update.sh
+```
+
+This pulls the latest code and Docker image, then restarts the container. Your `.env` and archive are preserved. You can also update manually:
+
+```bash
+git pull
+docker compose pull
+docker compose up -d
+```
+
 ## Configuration
 
 | Variable | Default | Description |

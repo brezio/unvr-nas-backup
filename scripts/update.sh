@@ -15,8 +15,7 @@ echo "Pulling latest Docker image..."
 docker compose pull
 
 echo
-echo "Restarting container..."
-docker compose down
+echo "Starting container..."
 docker compose up -d
 
 echo
