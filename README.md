@@ -72,17 +72,25 @@ docker compose build && docker compose up -d
 
 ## Archive structure
 
+Files are stored canonically by camera, with date-based symlinks for browsing by date:
+
 ```
 /archive/
-├── Front-Door/
-│   ├── 2026-02-19/
-│   │   ├── Front-Door_2026-02-19_08-00-00_to_08-05-00.mp4
-│   │   └── Front-Door_2026-02-19_08-05-00_to_08-10-00.mp4
-│   └── 2026-02-20/
+├── by-camera/                          # Canonical storage
+│   ├── Front-Door/
+│   │   ├── 2026-02-19/
+│   │   │   ├── Front-Door_2026-02-19_08-00-00_to_08-05-00.mp4
+│   │   │   └── Front-Door_2026-02-19_08-05-00_to_08-10-00.mp4
+│   │   └── 2026-02-20/
+│   │       └── ...
+│   └── Backyard/
 │       └── ...
-├── Backyard/
-│   └── ...
-└── ...
+└── by-date/                            # Symlinks
+    ├── 2026-02-19/
+    │   ├── Front-Door → ../../by-camera/Front-Door/2026-02-19
+    │   └── Backyard   → ../../by-camera/Backyard/2026-02-19
+    └── 2026-02-20/
+        └── ...
 ```
 
 ## Troubleshooting

@@ -116,7 +116,7 @@ while IFS=',' read -r cam_name file folder start_ts end_ts channel; do
     end_time=$(date -u -d "@${end_sec}" '+%H-%M-%S')
     safe_cam=$(echo "$cam_name" | tr ' /' '_-')
     final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}.mp4"
-    archive_subdir="${ARCHIVE_DIR}/${safe_cam}/${date_str}"
+    archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${date_str}"
     final_path="${archive_subdir}/${final_name}"
 
     # Skip if already archived
@@ -217,11 +217,20 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
     safe_cam=$(echo "$cam_name" | tr ' /' '_-')
 
     final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}.mp4"
-    archive_subdir="${ARCHIVE_DIR}/${safe_cam}/${date_str}"
+    archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${date_str}"
 
     mkdir -p "$archive_subdir"
     mv "$mp4_file" "${archive_subdir}/${final_name}"
     debug "Archived: ${archive_subdir}/${final_name}"
+
+    # Create by-date symlink: /archive/by-date/YYYY-MM-DD/CameraName → ../../by-camera/CameraName/YYYY-MM-DD
+    bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
+    if [ ! -L "$bydate_link" ]; then
+        mkdir -p "${ARCHIVE_DIR}/by-date/${date_str}"
+        ln -s "../../by-camera/${safe_cam}/${date_str}" "$bydate_link"
+        debug "Symlinked: by-date/${date_str}/${safe_cam}"
+    fi
+
     archived=$((archived + 1))
 done
 
