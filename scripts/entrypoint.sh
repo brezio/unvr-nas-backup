@@ -71,7 +71,9 @@ export SSH_OPTS
 # ── Export env for cron ──────────────────────────────────────────────────────
 # Cron jobs don't inherit the container's environment, so we dump it to a file
 # that backup.sh will source.
-env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH)' \
+# Quote values so sourcing is safe (handles spaces in SSH_OPTS, paths, etc.)
+env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=)' \
+    | sed "s/=/='/" | sed "s/$/'/" \
     > /etc/environment
 
 # ── Set up cron ──────────────────────────────────────────────────────────────

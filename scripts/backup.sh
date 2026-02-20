@@ -56,7 +56,10 @@ trap cleanup EXIT
 # ── Prep staging dirs ────────────────────────────────────────────────────────
 mkdir -p "${STAGING_DIR}/ubv" "$REMUX_DIR"
 
-# ── SSH helper ───────────────────────────────────────────────────────────────
+# ── SSH / SCP helpers ────────────────────────────────────────────────────────
+# SCP uses -P (uppercase) for port, not -p (which means "preserve times")
+SCP_OPTS=$(echo "$SSH_OPTS" | sed 's/-p /-P /g')
+
 remote() {
     # shellcheck disable=SC2086
     ssh $SSH_OPTS "${PROTECT_SSH_USER}@${PROTECT_HOST}" "$@"
@@ -64,7 +67,7 @@ remote() {
 
 remote_scp() {
     # shellcheck disable=SC2086
-    scp $SSH_OPTS "$@"
+    scp $SCP_OPTS "$@"
 }
 
 # ── Step 1: Query DB for recent recording files ─────────────────────────────
@@ -72,17 +75,18 @@ log "Querying recordings from the last ${BACKUP_HOURS}h..."
 
 LOOKBACK_MS=$((BACKUP_HOURS * 3600 * 1000))
 
-QUERY="COPY (
-    SELECT c.name, rf.file, rf.folder, rf.start, rf.\"end\", rf.channel
+CSV=$(remote "psql -p ${PROTECT_DB_PORT} -U postgres -d ${PROTECT_DB_NAME} -At" <<EOSQL
+COPY (
+    SELECT c.name, rf.file, rf.folder, rf.start, rf."end", rf.channel
     FROM cameras c
-    JOIN \"recordingFiles\" rf ON c.id = rf.\"cameraId\"
+    JOIN "recordingFiles" rf ON c.id = rf."cameraId"
     WHERE rf.type = 'rotating'
       AND rf.active = false
       AND rf.start > (extract(epoch from now()) * 1000 - ${LOOKBACK_MS})
     ORDER BY rf.start ASC
-) TO STDOUT WITH CSV HEADER;"
-
-CSV=$(remote "psql -p ${PROTECT_DB_PORT} -U postgres -d ${PROTECT_DB_NAME} -c \"${QUERY}\"") || die "DB query failed"
+) TO STDOUT WITH CSV HEADER;
+EOSQL
+) || die "DB query failed"
 
 # Count results (subtract header line)
 TOTAL=$(echo "$CSV" | tail -n +2 | grep -c . || true)
