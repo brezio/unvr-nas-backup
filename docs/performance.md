@@ -72,6 +72,15 @@ We benchmarked four SCP modes by transferring a 1 GB `.ubv` file from the CloudK
 
 Peak CPU percentage is similar across all modes (the cipher work still lands on one core), but AES-GCM finishes ~27% faster, so the total CPU-seconds burned per transfer is significantly lower. The SFTP-vs-legacy-SCP distinction makes no meaningful difference.
 
+We then validated this in production by running back-to-back A/B tests - transferring 1 GB `.ubv` files from the CloudKey to the NAS with each cipher, measuring wall-clock time from the backup logs:
+
+| Cipher | Samples (1 GB each) | Avg time | Throughput |
+|---|---|---|---|
+| ChaCha20-Poly1305 | 19s, 19s, 20s, 20s | **~20s** | ~51 MB/s |
+| AES-128-GCM | 15s | **~15s** | ~67 MB/s |
+
+The production results confirm the benchmark: AES-GCM transfers complete ~25% faster per file. The improvement comes from the ARMv8 hardware AES extensions handling the cipher work in silicon rather than software.
+
 Based on this, the project defaults to `-c aes128-gcm@openssh.com` in its SSH options. Both tested Protect devices (CloudKey Gen2+ and UCG-Fiber) confirmed hardware AES support via `/proc/cpuinfo` and successful `aes128-gcm@openssh.com` cipher negotiation (verified with `ssh -v`).
 
 ## Tested devices
