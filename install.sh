@@ -64,12 +64,43 @@ read -rp "  CRON_SCHEDULE [*/15 * * * *]: " cron_schedule
 cron_schedule="${cron_schedule:-*/15 * * * *}"
 
 # Generate .env
-cp .env.example .env
-sed -i "s|^PROTECT_HOST=.*|PROTECT_HOST=${protect_host}|" .env
-sed -i "s|^PROTECT_SSH_USER=.*|PROTECT_SSH_USER=${ssh_user}|" .env
-sed -i "s|^ARCHIVE_PATH=.*|ARCHIVE_PATH=${archive_path}|" .env
-sed -i "s|^TZ=.*|TZ=${tz}|" .env
-sed -i "s|^CRON_SCHEDULE=.*|CRON_SCHEDULE=${cron_schedule}|" .env
+cat > .env <<ENVEOF
+# Required - hostname or IP of your Protect device (CloudKey, UCG, UDM, UNVR, etc.)
+PROTECT_HOST=${protect_host}
+
+# SSH user (root for most devices, may differ on standalone UNVRs)
+PROTECT_SSH_USER=${ssh_user}
+
+# PostgreSQL settings
+PROTECT_DB_PORT=5433
+PROTECT_DB_NAME=unifi-protect
+
+# How many hours back to look for recordings
+BACKUP_HOURS=1
+
+# SCP batching - copy N files, then pause BATCH_DELAY seconds
+BATCH_SIZE=5
+BATCH_DELAY=30
+
+# Required - host path where archived .mp4 files are stored
+ARCHIVE_PATH=${archive_path}
+
+# Host path to SSH keys (must contain a key authorized on the Protect device)
+SSH_KEY_PATH=~/.ssh
+
+# Cron schedule (default: every 15 minutes)
+# Do not quote this value - Docker Compose includes quotes literally
+CRON_SCHEDULE=${cron_schedule}
+
+# Run a backup immediately on container start
+RUN_ON_START=true
+
+# Timezone
+TZ=${tz}
+
+# Log level: debug, info, warn, error
+LOG_LEVEL=info
+ENVEOF
 
 echo
 echo "Generated .env:"

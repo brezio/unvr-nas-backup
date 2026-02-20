@@ -69,7 +69,7 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 |---|---|---|
 | `PROTECT_HOST` | *(required)* | Hostname or IP of your Protect device |
 | `PROTECT_SSH_USER` | `root` | SSH user (`root` on most devices, may differ on standalone UNVRs) |
-| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Video file path on the device (standard on all known devices) |
+| `PROTECT_VIDEO_PATH` | `/srv/unifi-protect/video` | Fallback video path if the DB-reported folder is not accessible |
 | `PROTECT_DB_PORT` | `5433` | PostgreSQL port |
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
 | `BACKUP_HOURS` | `1` | How many hours back to look for recordings. Set this to at least 2x your cron interval so recordings that finish between runs are not missed. |

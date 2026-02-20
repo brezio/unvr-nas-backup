@@ -27,23 +27,15 @@ debug() { [ "$LOG_LEVEL" = "debug" ] && log "DEBUG: $*"; return 0; }
 warn()  { log "WARN: $*"; }
 die()   { log "ERROR: $*" >&2; exit 1; }
 
-# ── Lock ─────────────────────────────────────────────────────────────────────
-if [ -f "$LOCKFILE" ]; then
-    pid=$(cat "$LOCKFILE" 2>/dev/null || true)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        die "Another backup is running (PID $pid). Skipping."
-    fi
-    warn "Stale lockfile found, removing"
-    rm -f "$LOCKFILE"
-fi
-echo $$ > "$LOCKFILE"
+# ── Lock (atomic via flock) ──────────────────────────────────────────────────
+exec 9>"$LOCKFILE"
+flock -n 9 || die "Another backup is running. Skipping."
 
 # ── Cleanup trap ─────────────────────────────────────────────────────────────
 cleanup() {
     local exit_code=$?
     log "Cleaning up staging files..."
     rm -rf "${STAGING_DIR:?}/ubv" "${STAGING_DIR:?}/remuxed" "${STAGING_DIR:?}"/*.meta
-    rm -f "$LOCKFILE"
     if [ $exit_code -eq 0 ]; then
         log "Backup completed successfully"
     else
@@ -133,10 +125,20 @@ while IFS=',' read -r cam_name file folder start_ts end_ts channel; do
     fi
 
     debug "Copying: ${ubv_path}"
-    remote_scp "${PROTECT_SSH_USER}@${PROTECT_HOST}:${ubv_path}" "$local_ubv" || {
-        warn "Failed to copy ${ubv_path}, skipping"
-        continue
+    remote_scp "${PROTECT_SSH_USER}@${PROTECT_HOST}:${ubv_path}" "$local_ubv" 2>/dev/null || {
+        # Fallback to PROTECT_VIDEO_PATH if the DB folder path doesn't work
+        fallback_path="${PROTECT_VIDEO_PATH}/${file}"
+        debug "DB path failed, trying fallback: ${fallback_path}"
+        remote_scp "${PROTECT_SSH_USER}@${PROTECT_HOST}:${fallback_path}" "$local_ubv" || {
+            warn "Failed to copy ${file}, skipping"
+            continue
+        }
     }
+
+    # Validate numeric fields from DB
+    [[ "$start_ts" =~ ^[0-9]+$ ]] || { warn "Invalid start_ts for ${file}, skipping"; continue; }
+    [[ "$end_ts" =~ ^[0-9]+$ ]] || { warn "Invalid end_ts for ${file}, skipping"; continue; }
+    [[ "$channel" =~ ^[0-9]+$ ]] || { warn "Invalid channel for ${file}, skipping"; continue; }
 
     # Write metadata sidecar (quote values for safe sourcing)
     cat > "${STAGING_DIR}/${file}.meta" <<METAEOF

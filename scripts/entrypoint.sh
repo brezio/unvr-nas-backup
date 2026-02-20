@@ -72,8 +72,9 @@ export SSH_OPTS
 # that backup.sh will source.
 # Quote values so sourcing is safe (handles spaces in SSH_OPTS, paths, etc.)
 env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=)' \
-    | sed "s/=/='/" | sed "s/$/'/" \
-    > /etc/environment
+    | while IFS='=' read -r key value; do
+        printf "%s='%s'\n" "$key" "${value//\'/\'\\\'\'}"
+    done > /etc/environment
 
 # ── Set up cron ──────────────────────────────────────────────────────────────
 CRON_LINE="${CRON_SCHEDULE} /usr/local/bin/backup.sh >> /proc/1/fd/1 2>> /proc/1/fd/2"
