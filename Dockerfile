@@ -5,12 +5,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cron \
         curl \
         ca-certificates \
-        jq \
         procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install unifi-protect-remux v4.1.4
-RUN curl -fsSL "https://github.com/petergeneric/unifi-protect-remux/releases/download/v4.1.4/unifi-protect-remux-linux-x86_64.tar.gz" \
+# Install unifi-protect-remux v4.1.4 — pick the right binary for the build platform
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+        amd64) REMUX_ARCH="x86_64" ;; \
+        arm64) REMUX_ARCH="aarch64" ;; \
+        *)     echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/petergeneric/unifi-protect-remux/releases/download/v4.1.4/unifi-protect-remux-linux-${REMUX_ARCH}.tar.gz" \
         -o /tmp/remux.tar.gz \
     && tar -xzf /tmp/remux.tar.gz -C /tmp \
     && mv /tmp/remux /usr/local/bin/remux \

@@ -28,7 +28,7 @@ NAS (Docker)                       Protect Device (CloudKey, UCG, UDM, UNVR, etc
 git clone https://github.com/Ozark-Connect/unvr-nas-backup.git /opt/unvr-nas-backup
 cd /opt/unvr-nas-backup
 
-# Interactive install — prompts for host and archive path, builds and starts
+# Interactive install — prompts for host and archive path, pulls image and starts
 ./install.sh
 
 # Or manually:
@@ -43,10 +43,10 @@ The pre-built image is pulled automatically from `ghcr.io/ozark-connect/unvr-nas
 
 | Script | Description |
 |---|---|
-| `./install.sh` | First-time setup — creates `.env`, tests SSH, builds and starts the container |
+| `./install.sh` | First-time setup — creates `.env`, tests SSH, pulls image and starts the container |
 | `./scripts/status.sh` | Shows backup health: last run, archive stats, disk usage, container/cron status |
 | `./scripts/run-now.sh` | Triggers an immediate backup without waiting for cron |
-| `./scripts/update.sh` | Pulls latest code, rebuilds the image, and restarts the container |
+| `./scripts/update.sh` | Pulls latest code and image, and restarts the container |
 
 ## Configuration
 
@@ -84,7 +84,7 @@ Should work on any device running UniFi Protect with SSH access, PostgreSQL on p
 
 ## Prerequisites
 
-- Docker and Docker Compose on the NAS
+- Docker and Docker Compose on the NAS (x86_64 or ARM64)
 - SSH key-based access from the NAS to the Protect device (`ssh root@<host>` must work without a password)
 - UniFi Protect running with PostgreSQL on port 5433
 

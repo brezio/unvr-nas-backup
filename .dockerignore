@@ -1,0 +1,13 @@
+.git
+.github
+.env
+*.env.local
+.gitignore
+.gitattributes
+.dockerignore
+README.md
+LICENSE
+THIRD-PARTY-NOTICES.md
+install.sh
+staging/
+archive/

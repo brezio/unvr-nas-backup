@@ -11,6 +11,10 @@ staging/
 archive/
 *.log
 
+# Claude Code
+CLAUDE.md
+.claude/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

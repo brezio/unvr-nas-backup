@@ -11,8 +11,8 @@ echo "Pulling latest code..."
 git pull
 
 echo
-echo "Rebuilding Docker image..."
-docker compose build
+echo "Pulling latest Docker image..."
+docker compose pull
 
 echo
 echo "Restarting container..."

@@ -22,8 +22,8 @@ if [ -f .env ]; then
     echo "Found existing .env file."
     read -rp "Overwrite it? [y/N] " overwrite
     if [[ ! "$overwrite" =~ ^[Yy] ]]; then
-        echo "Keeping existing .env. Skipping to build."
-        docker compose build
+        echo "Keeping existing .env. Pulling latest image and starting..."
+        docker compose pull
         docker compose up -d
         echo
         echo "Done! Run './scripts/status.sh' to check health."
@@ -32,7 +32,7 @@ if [ -f .env ]; then
 fi
 
 # Prompt for required values
-echo "Enter the hostname or IP of your CloudKey / UNVR:"
+echo "Enter the hostname or IP of your Protect device (CloudKey, UCG, UDM, UNVR, etc.):"
 read -rp "  PROTECT_HOST: " protect_host
 if [ -z "$protect_host" ]; then
     echo "ERROR: PROTECT_HOST is required." >&2
@@ -55,8 +55,8 @@ tz="${tz:-UTC}"
 
 echo
 echo "Enter the cron schedule for backups:"
-read -rp "  CRON_SCHEDULE [0 * * * *]: " cron_schedule
-cron_schedule="${cron_schedule:-0 * * * *}"
+read -rp "  CRON_SCHEDULE [*/15 * * * *]: " cron_schedule
+cron_schedule="${cron_schedule:-*/15 * * * *}"
 
 # Generate .env
 cp .env.example .env
@@ -83,14 +83,14 @@ if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "root@${protect_host
     echo "SSH connection OK"
 else
     echo "WARNING: Cannot SSH to root@${protect_host}"
-    echo "Make sure your SSH key is authorized on the CloudKey before starting."
+    echo "Make sure your SSH key is authorized on the Protect device before starting."
     echo
 fi
 
-# Build and start
+# Pull and start
 echo
-echo "Building Docker image..."
-docker compose build
+echo "Pulling Docker image..."
+docker compose pull
 
 echo
 echo "Starting container..."
