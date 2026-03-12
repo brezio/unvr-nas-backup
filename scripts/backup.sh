@@ -21,6 +21,7 @@ STAGING_DIR="/staging"
 REMUX_DIR="${STAGING_DIR}/remuxed"
 ARCHIVE_DIR="/archive"
 LOCKFILE="/tmp/backup.lock"
+FAILURES_FILE="${STAGING_DIR}/.remux-failures"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 log()   { echo "[backup] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
@@ -162,6 +163,13 @@ while IFS=',' read -r cam_name file folder start_ts end_ts channel; do
         continue
     fi
 
+    # Skip if remux previously failed for this file
+    if [ -f "$FAILURES_FILE" ] && grep -qFx "$file" "$FAILURES_FILE"; then
+        debug "Skipping known remux failure: ${file}"
+        skipped=$((skipped + 1))
+        continue
+    fi
+
     debug "Copying: ${ubv_path}"
     remote_scp "${PROTECT_SSH_USER}@${PROTECT_HOST}:${ubv_path}" "$local_ubv" 2>/dev/null || {
         # Fallback to PROTECT_VIDEO_PATH if the DB folder path doesn't work
@@ -214,6 +222,7 @@ for ubv_file in "${STAGING_DIR}/ubv/"*.ubv; do
         remuxed=$((remuxed + 1))
     else
         warn "Remux failed for ${basename_ubv}"
+        echo "$basename_ubv" >> "$FAILURES_FILE"
         failed=$((failed + 1))
     fi
 done
