@@ -218,7 +218,11 @@ EOSQL
 # Count results (subtract header line)
 TOTAL=$(echo "$CSV" | tail -n +2 | grep -c . || true)
 if [ "$TOTAL" -eq 0 ]; then
-    log "No new recordings found. Done."
+    log "No new recordings found."
+    if [ -n "${RETENTION_DAYS}" ] || [ -n "${RETENTION_PERCENT}" ]; then
+        run_retention_prune
+    fi
+    log "Done."
     exit 0
 fi
 log "Found ${TOTAL} recording file(s) to back up"
