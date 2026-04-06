@@ -71,7 +71,7 @@ export SSH_OPTS
 # Cron jobs don't inherit the container's environment, so we dump it to a file
 # that backup.sh will source.
 # Quote values so sourcing is safe (handles spaces in SSH_OPTS, paths, etc.)
-env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=)' \
+env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=|RETENTION_)' \
     | while IFS='=' read -r key value; do
         printf "%s='%s'\n" "$key" "${value//\'/\'\\\'\'}"
     done > /etc/environment

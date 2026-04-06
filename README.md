@@ -144,8 +144,12 @@ Your archive directory is **not** deleted automatically. Remove it manually if y
 | `RUN_ON_START` | `true` | Run a backup immediately on container start |
 | `TZ` | `UTC` | Timezone for log messages. Archive filenames always use UTC regardless of this setting. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `RETENTION_DAYS` | *(disabled)* | Delete footage older than N days. Runs after each backup. |
+| `RETENTION_PERCENT` | *(disabled)* | When disk usage exceeds N%, prune oldest footage until it drops below. Runs after each backup. |
 
 > **Disk usage**: Continuous recording generates roughly 10-20 GB per camera per day depending on resolution and scene activity. Plan your archive storage accordingly.
+>
+> **Retention**: Both retention settings are disabled by default (the archive grows indefinitely). When both are set, age-based pruning (`RETENTION_DAYS`) runs first, then disk-based pruning (`RETENTION_PERCENT`) kicks in if usage is still over the threshold. Pruning always deletes the oldest dates first.
 
 ## Compatibility
 

@@ -16,6 +16,8 @@ BATCH_DELAY="${BATCH_DELAY:-30}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 BACKUP_CHANNELS="${BACKUP_CHANNELS:-0}"
 SSH_DIR="${SSH_DIR:-/tmp/.ssh-copy}"
+RETENTION_DAYS="${RETENTION_DAYS:-}"
+RETENTION_PERCENT="${RETENTION_PERCENT:-}"
 
 STAGING_DIR="/staging"
 REMUX_DIR="${STAGING_DIR}/remuxed"
@@ -61,6 +63,76 @@ build_archive_path() {
     final_path="${archive_subdir}/${final_name}"
 }
 
+# ── Retention helpers ────────────────────────────────────────────────────────
+prune_date_dir() {
+    local date_dir="$1"
+    local bydate_path="${ARCHIVE_DIR}/by-date/${date_dir}"
+    [ -d "$bydate_path" ] || return 0
+
+    local count=0
+    for link in "$bydate_path"/*; do
+        [ -L "$link" ] || continue
+        local target
+        target=$(readlink -f "$link")
+        if [ -d "$target" ]; then
+            count=$(( count + $(find "$target" -type f | wc -l) ))
+            rm -rf "$target"
+            # Clean empty parents up to by-camera/
+            local parent
+            parent=$(dirname "$target")
+            rmdir "$parent" 2>/dev/null || true
+            parent=$(dirname "$parent")
+            rmdir "$parent" 2>/dev/null || true
+        fi
+        rm -f "$link"
+    done
+    rmdir "$bydate_path" 2>/dev/null || true
+    log "Pruned ${date_dir}: removed ${count} file(s)"
+}
+
+run_retention_prune() {
+    local date_dirs
+    date_dirs=$(ls -1 "${ARCHIVE_DIR}/by-date/" 2>/dev/null | sort)
+    [ -n "$date_dirs" ] || return 0
+
+    # Phase 1: RETENTION_DAYS — delete everything older than N days
+    if [ -n "$RETENTION_DAYS" ]; then
+        local cutoff
+        cutoff=$(date -u -d "-${RETENTION_DAYS} days" '+%Y-%m-%d')
+        log "Retention: pruning footage older than ${cutoff} (${RETENTION_DAYS} days)"
+        while IFS= read -r d; do
+            [[ "$d" < "$cutoff" ]] || continue
+            prune_date_dir "$d"
+        done <<< "$date_dirs"
+        # Refresh list after phase 1
+        date_dirs=$(ls -1 "${ARCHIVE_DIR}/by-date/" 2>/dev/null | sort)
+    fi
+
+    # Phase 2: RETENTION_PERCENT — delete oldest until disk usage drops below threshold
+    if [ -n "$RETENTION_PERCENT" ]; then
+        local usage
+        usage=$(df --output=pcent "$ARCHIVE_DIR" | tail -1 | tr -dc '0-9')
+        if [ "${usage:-0}" -gt "$RETENTION_PERCENT" ]; then
+            log "Retention: disk at ${usage}%, target <${RETENTION_PERCENT}%"
+            while IFS= read -r d; do
+                [ -d "${ARCHIVE_DIR}/by-date/${d}" ] || continue
+                prune_date_dir "$d"
+                usage=$(df --output=pcent "$ARCHIVE_DIR" | tail -1 | tr -dc '0-9')
+                if [ "${usage:-0}" -le "$RETENTION_PERCENT" ]; then
+                    log "Retention: disk now at ${usage}%, below target"
+                    break
+                fi
+            done <<< "$date_dirs"
+            usage=$(df --output=pcent "$ARCHIVE_DIR" | tail -1 | tr -dc '0-9')
+            if [ "${usage:-0}" -gt "$RETENTION_PERCENT" ]; then
+                warn "Retention: disk still at ${usage}% after pruning all available dates"
+            fi
+        else
+            debug "Retention: disk at ${usage}%, below ${RETENTION_PERCENT}% threshold"
+        fi
+    fi
+}
+
 # ── Validate BACKUP_CHANNELS → SQL IN clause ────────────────────────────────
 CHANNEL_LIST=""
 IFS=',' read -ra _channels <<< "$BACKUP_CHANNELS"
@@ -70,6 +142,16 @@ for _ch in "${_channels[@]}"; do
 done
 unset _channels _ch
 [ -n "$CHANNEL_LIST" ] || die "BACKUP_CHANNELS is empty or invalid: ${BACKUP_CHANNELS}"
+
+# ── Validate retention settings ─────────────────────────────────────────────
+if [ -n "${RETENTION_DAYS}" ]; then
+    [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || die "RETENTION_DAYS must be a positive integer"
+    [ "$RETENTION_DAYS" -gt 0 ] || die "RETENTION_DAYS must be > 0"
+fi
+if [ -n "${RETENTION_PERCENT}" ]; then
+    [[ "$RETENTION_PERCENT" =~ ^[0-9]+$ ]] || die "RETENTION_PERCENT must be a positive integer"
+    [ "$RETENTION_PERCENT" -gt 0 ] && [ "$RETENTION_PERCENT" -le 99 ] || die "RETENTION_PERCENT must be 1-99"
+fi
 
 # ── Lock (atomic via flock) ──────────────────────────────────────────────────
 exec 9>"$LOCKFILE"
@@ -289,6 +371,11 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
 done
 
 log "Archived ${archived} file(s) to ${ARCHIVE_DIR}"
+
+# ── Retention pruning ───────────────────────────────────────────────────────
+if [ -n "${RETENTION_DAYS}" ] || [ -n "${RETENTION_PERCENT}" ]; then
+    run_retention_prune
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived}"
