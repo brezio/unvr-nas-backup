@@ -198,7 +198,7 @@ delete_local_file() {
 # Only cameras with "enabled": true are backed up during scheduled runs.
 # API-triggered backups with an explicit BACKUP_CAMERA_ID bypass this filter.
 INDEX_CAMERA_IDS=""
-if [ -z "$BACKUP_CAMERA_ID" ] && [ -f "$INDEX_FILE" ]; then
+if [ -z "${BACKUP_CAMERA_ID:-}" ] && [ -f "$INDEX_FILE" ]; then
     # Extract enabled camera IDs using python3 (already in the container)
     INDEX_CAMERA_IDS=$(python3 -c "
 import json, sys
