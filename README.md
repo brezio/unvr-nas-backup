@@ -165,6 +165,12 @@ curl -X PUT http://<nas-ip>:7550/api/cameras \
 
 # Remove a camera from the index
 curl -X DELETE "http://<nas-ip>:7550/api/cameras?camera_id=63a1f2bcde0400038f000123"
+
+# Preview sync changes from UNVR (dry run)
+curl "http://<nas-ip>:7550/api/cameras/sync"
+
+# Sync camera index with UNVR (apply changes)
+curl -X POST "http://<nas-ip>:7550/api/cameras/sync"
 ```
 
 ### `GET /api/status`
@@ -197,7 +203,8 @@ Returns the current backup state, last success time, archive disk usage, cron sc
     ],
     "total": 1,
     "enabled": 1
-  }
+  },
+  "last_synced": 1744034400
 }
 ```
 
@@ -342,20 +349,67 @@ The index file is created automatically on first container start and persists in
 
 ### `GET /api/cameras`
 
-Returns the current camera index.
+Returns the camera index enriched with date-range availability from the local archive, S3, and the UNVR. Each data source reports `oldest_ms` / `newest_ms` (epoch milliseconds) and `recording_count`. A `null` value means no data exists in that source.
+
+```bash
+curl http://<nas-ip>:7550/api/cameras
+```
 
 ```json
 {
   "cameras": [
-    {"id": "63a1f2bcde0400038f000123", "name": "Front Door", "enabled": true},
-    {"id": "74b2e3cdef0500049g111234", "name": "Garage", "enabled": false}
+    {
+      "id": "63a1f2bcde0400038f000123",
+      "name": "Front Door",
+      "enabled": true,
+      "archive": { "oldest_ms": 1743984000000, "newest_ms": 1744034400000, "recording_count": 128 },
+      "s3": { "oldest_ms": 1743984000000, "newest_ms": 1744034400000, "recording_count": 128 },
+      "unvr": { "oldest_ms": 1741392000000, "newest_ms": 1744034400000, "recording_count": 4096 }
+    },
+    {
+      "id": "74b2e3cdef0500049g111234",
+      "name": "Garage",
+      "enabled": false,
+      "archive": null,
+      "s3": null,
+      "unvr": { "oldest_ms": 1742601600000, "newest_ms": 1744034400000, "recording_count": 2048 }
+    }
   ],
   "total": 2,
   "enabled": 1
 }
 ```
 
+Fields per camera:
+
+- `archive` — date range of locally archived `.mp4` files (parsed from filenames)
+- `s3` — date range of files in S3 (`null` when S3 is disabled)
+- `unvr` — date range of all recordings on the UNVR (via SSH/psql query)
+
+If the SSH connection to the UNVR fails, `unvr` will be `null` for all cameras and a top-level `unvr_error` string is included in the response.
+
 Cameras with `"enabled": false` are in the index but excluded from scheduled backups.
+
+### `GET /api/cameras?camera_id=<id>`
+
+Returns detail for a single camera. Same shape as an individual entry in the cameras array, plus any `unvr_error` if the UNVR query failed.
+
+```bash
+curl "http://<nas-ip>:7550/api/cameras?camera_id=63a1f2bcde0400038f000123"
+```
+
+```json
+{
+  "id": "63a1f2bcde0400038f000123",
+  "name": "Front Door",
+  "enabled": true,
+  "archive": { "oldest_ms": 1743984000000, "newest_ms": 1744034400000, "recording_count": 128 },
+  "s3": { "oldest_ms": 1743984000000, "newest_ms": 1744034400000, "recording_count": 128 },
+  "unvr": { "oldest_ms": 1741392000000, "newest_ms": 1744034400000, "recording_count": 4096 }
+}
+```
+
+Returns `404` if the camera ID is not in the index.
 
 ### `POST /api/cameras`
 
@@ -427,6 +481,83 @@ Response (`200 OK`):
 ```
 
 Returns `404` if the camera is not in the index. Removing all cameras from the index reverts to backing up all cameras.
+
+### `GET /api/cameras/sync`
+
+Connects to the UNVR via SSH, queries its cameras table, and compares the result against the current index. Returns a list of suggested changes **without applying them** (dry run).
+
+```bash
+curl "http://<nas-ip>:7550/api/cameras/sync"
+```
+
+Response:
+
+```json
+{
+  "unvr_cameras": 4,
+  "changes": [
+    {
+      "action": "add",
+      "camera_id": "85c3f4defg0600050h222345",
+      "name": "Back Yard",
+      "enabled": false,
+      "reason": "exists on UNVR but not in config"
+    },
+    {
+      "action": "disable",
+      "camera_id": "63a1f2bcde0400038f000123",
+      "name": "Front Door",
+      "reason": "exists in config but not on UNVR"
+    },
+    {
+      "action": "update_name",
+      "camera_id": "74b2e3cdef0500049g111234",
+      "old_name": "Garage",
+      "new_name": "Garage East",
+      "reason": "name differs between UNVR and config"
+    }
+  ],
+  "total_changes": 3
+}
+```
+
+Possible actions:
+
+- **`add`** — camera exists on the UNVR but not in the config. Will be added with `"enabled": false`.
+- **`disable`** — camera exists in the config but not on the UNVR. Will be marked `"enabled": false`.
+- **`update_name`** — camera exists in both, but the name on the UNVR differs from the config.
+
+Returns `502` if the SSH connection or database query fails.
+
+### `POST /api/cameras/sync`
+
+Same as the GET variant, but **applies all changes** to `_index.json` and updates the `last_synced` timestamp. No request body is needed.
+
+```bash
+curl -X POST "http://<nas-ip>:7550/api/cameras/sync"
+```
+
+Response:
+
+```json
+{
+  "synced": true,
+  "changes_applied": 2,
+  "changes": [
+    {"action": "add", "camera_id": "85c3f4defg0600050h222345", "name": "Back Yard", "enabled": false, "reason": "exists on UNVR but not in config"}
+  ],
+  "cameras": [
+    {"id": "63a1f2bcde0400038f000123", "name": "Front Door", "enabled": true},
+    {"id": "74b2e3cdef0500049g111234", "name": "Garage East", "enabled": true},
+    {"id": "85c3f4defg0600050h222345", "name": "Back Yard", "enabled": false}
+  ],
+  "last_synced": 1744034400
+}
+```
+
+When there are no changes, `changes_applied` is `0` and the `changes` key is omitted. The `last_synced` timestamp is always updated, even when no changes are needed.
+
+The `last_synced` field is also persisted in `_index.json` at the root level and is visible in the `GET /api/status` response.
 
 ## Configuration
 

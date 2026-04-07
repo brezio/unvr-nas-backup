@@ -6,14 +6,16 @@ so no pip dependencies are required. Reads the same environment variables and
 file-system state that backup.sh uses.
 
 Endpoints:
-    GET    /api/status   — current backup health and configuration
-    GET    /api/backups  — list all archived recordings with local/S3 location
-    GET    /api/playback — files needed to play back a camera's footage for a time range
-    POST   /api/backup   — trigger a backup (optional camera_id and time range)
-    GET    /api/cameras  — list cameras in the index
-    POST   /api/cameras  — add a camera to the index
-    PUT    /api/cameras  — update a camera in the index
-    DELETE /api/cameras  — remove a camera from the index
+    GET    /api/status        — current backup health and configuration
+    GET    /api/backups       — list all archived recordings with local/S3 location
+    GET    /api/playback      — files needed to play back a camera's footage for a time range
+    POST   /api/backup        — trigger a backup (optional camera_id and time range)
+    GET    /api/cameras       — list cameras in the index
+    POST   /api/cameras       — add a camera to the index
+    PUT    /api/cameras       — update a camera in the index
+    DELETE /api/cameras       — remove a camera from the index
+    GET    /api/cameras/sync  — preview changes from UNVR (dry run)
+    POST   /api/cameras/sync  — sync camera index with UNVR and apply changes
 """
 
 import calendar
@@ -45,6 +47,13 @@ S3_STORAGE_CLASS = os.environ.get("S3_STORAGE_CLASS", "STANDARD")
 CRON_SCHEDULE = os.environ.get("CRON_SCHEDULE", "*/15 * * * *")
 
 INDEX_FILE = ARCHIVE_DIR / "_index.json"
+
+# UNVR connection (reuses the same env vars as backup.sh / entrypoint.sh)
+PROTECT_HOST = os.environ.get("PROTECT_HOST", "")
+PROTECT_SSH_USER = os.environ.get("PROTECT_SSH_USER", "root")
+PROTECT_DB_PORT = os.environ.get("PROTECT_DB_PORT", "5433")
+PROTECT_DB_NAME = os.environ.get("PROTECT_DB_NAME", "unifi-protect")
+SSH_OPTS = os.environ.get("SSH_OPTS", "")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -168,6 +177,199 @@ def _build_cameras():
     }
 
 
+def _archive_ranges():
+    """Scan local archive and return per-camera date ranges.
+
+    Returns dict: {camera_id: {"oldest_ms": int, "newest_ms": int, "recording_count": int}}
+    """
+    by_id = ARCHIVE_DIR / "by-id"
+    ranges = {}
+    if not by_id.is_dir():
+        return ranges
+
+    for mp4 in by_id.rglob("*.mp4"):
+        parsed = _parse_recording_filename(mp4.name)
+        if not parsed:
+            continue
+        seg_start, seg_end = parsed
+        # Camera ID is the first directory component under by-id/
+        cam_id = mp4.relative_to(by_id).parts[0]
+
+        if cam_id not in ranges:
+            ranges[cam_id] = {
+                "oldest_ms": seg_start,
+                "newest_ms": seg_end,
+                "recording_count": 0,
+            }
+        r = ranges[cam_id]
+        r["oldest_ms"] = min(r["oldest_ms"], seg_start)
+        r["newest_ms"] = max(r["newest_ms"], seg_end)
+        r["recording_count"] += 1
+
+    return ranges
+
+
+def _s3_ranges():
+    """Derive per-camera date ranges from S3 object keys.
+
+    Returns dict: {camera_id: {"oldest_ms": int, "newest_ms": int, "recording_count": int}}
+    """
+    keys = _s3_list_keys()
+    if not keys:
+        return {}
+
+    ranges = {}
+    for key in keys:
+        if not key.startswith("by-id/"):
+            continue
+        fname = key.rsplit("/", 1)[-1]
+        if not fname.endswith(".mp4"):
+            continue
+        parsed = _parse_recording_filename(fname)
+        if not parsed:
+            continue
+        seg_start, seg_end = parsed
+        # by-id/{camera_id}/...
+        cam_id = key.split("/")[1] if len(key.split("/")) > 1 else None
+        if not cam_id:
+            continue
+
+        if cam_id not in ranges:
+            ranges[cam_id] = {
+                "oldest_ms": seg_start,
+                "newest_ms": seg_end,
+                "recording_count": 0,
+            }
+        r = ranges[cam_id]
+        r["oldest_ms"] = min(r["oldest_ms"], seg_start)
+        r["newest_ms"] = max(r["newest_ms"], seg_end)
+        r["recording_count"] += 1
+
+    return ranges
+
+
+def _unvr_ranges(camera_id=None):
+    """Query the UNVR for per-camera recording date ranges.
+
+    If *camera_id* is given, limits the query to that single camera.
+
+    Returns dict: {camera_id: {"oldest_ms": int, "newest_ms": int, "recording_count": int}}
+    Raises RuntimeError on SSH/DB failure.
+    """
+    if not PROTECT_HOST or not SSH_OPTS:
+        raise RuntimeError("PROTECT_HOST or SSH_OPTS not configured")
+
+    where_clause = ""
+    if camera_id:
+        where_clause = f"WHERE c.id = '{camera_id}'"
+
+    sql = (
+        f"SELECT c.id, MIN(rf.start), MAX(rf.\\\"end\\\"), COUNT(*) "
+        f"FROM cameras c "
+        f"JOIN \\\"recordingFiles\\\" rf ON c.id = rf.\\\"cameraId\\\" "
+        f"{where_clause} "
+        f"GROUP BY c.id"
+    )
+    cmd = (
+        f"ssh {SSH_OPTS} {PROTECT_SSH_USER}@{PROTECT_HOST} "
+        f"\"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} "
+        f"-At -F, -c \\\"{sql}\\\"\""
+    )
+
+    try:
+        result = subprocess.run(
+            cmd, shell=True,
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("SSH connection to UNVR timed out")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()[:200]
+        raise RuntimeError(f"UNVR query failed: {stderr}")
+
+    ranges = {}
+    for line in result.stdout.strip().splitlines():
+        if not line:
+            continue
+        parts = line.split(",")
+        if len(parts) < 4:
+            continue
+        cid = parts[0].strip()
+        try:
+            oldest = int(parts[1].strip())
+            newest = int(parts[2].strip())
+            count = int(parts[3].strip())
+        except ValueError:
+            continue
+        ranges[cid] = {
+            "oldest_ms": oldest,
+            "newest_ms": newest,
+            "recording_count": count,
+        }
+
+    return ranges
+
+
+def _build_cameras_detail(camera_id=None):
+    """Build enriched camera list with archive/S3/UNVR date ranges.
+
+    If *camera_id* is given, returns detail for a single camera only.
+    Returns (result, error).
+    """
+    data = _read_index()
+    cameras = data.get("cameras", [])
+
+    if camera_id:
+        cameras = [c for c in cameras if c.get("id") == camera_id]
+        if not cameras:
+            return None, f"camera not found: {camera_id}"
+
+    # Local archive ranges (always available, fast)
+    local = _archive_ranges()
+
+    # S3 ranges (skipped if S3 disabled)
+    s3 = _s3_ranges() if S3_ENABLED else {}
+
+    # UNVR ranges (SSH query — may fail)
+    unvr = {}
+    unvr_error = None
+    try:
+        unvr = _unvr_ranges(camera_id=camera_id)
+    except RuntimeError as exc:
+        unvr_error = str(exc)
+
+    enriched = []
+    for cam in cameras:
+        cid = cam.get("id", "")
+        entry = {
+            "id": cid,
+            "name": cam.get("name"),
+            "enabled": cam.get("enabled", True),
+            "archive": local.get(cid),
+            "s3": s3.get(cid) if S3_ENABLED else None,
+            "unvr": unvr.get(cid),
+        }
+        enriched.append(entry)
+
+    result = {
+        "cameras": enriched,
+        "total": len(enriched),
+        "enabled": sum(1 for c in enriched if c.get("enabled", True)),
+    }
+    if unvr_error:
+        result["unvr_error"] = unvr_error
+
+    # For single-camera requests, flatten to just the camera object
+    if camera_id:
+        single = enriched[0] if enriched else None
+        if unvr_error and single:
+            single["unvr_error"] = unvr_error
+        return single, None
+
+    return result, None
+
+
 def _add_camera(camera_id, name=None, enabled=True):
     """Add a camera to the index. Returns (result, error)."""
     if not camera_id or not isinstance(camera_id, str):
@@ -232,6 +434,135 @@ def _update_camera(camera_id, name=None, enabled=None):
     return None, f"camera not found: {camera_id}"
 
 
+def _query_unvr_cameras():
+    """SSH into the UNVR and query the cameras table.
+
+    Returns a list of dicts [{"id": "...", "name": "..."}, ...] or raises
+    RuntimeError on failure.
+    """
+    if not PROTECT_HOST:
+        raise RuntimeError("PROTECT_HOST is not configured")
+    if not SSH_OPTS:
+        raise RuntimeError("SSH_OPTS is not set (container may not be fully initialized)")
+
+    sql = (
+        "COPY (SELECT id, name FROM cameras ORDER BY name) "
+        "TO STDOUT WITH CSV HEADER;"
+    )
+    cmd = (
+        f"ssh {SSH_OPTS} {PROTECT_SSH_USER}@{PROTECT_HOST} "
+        f"\"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At -c "
+        f"\\\"COPY (SELECT id, name FROM cameras ORDER BY name) "
+        f"TO STDOUT WITH CSV HEADER;\\\"\""
+    )
+
+    try:
+        result = subprocess.run(
+            cmd, shell=True,
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("SSH connection to UNVR timed out")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()[:200]
+        raise RuntimeError(f"UNVR query failed: {stderr}")
+
+    cameras = []
+    for line in result.stdout.strip().splitlines():
+        if not line or line.startswith("id,"):
+            continue
+        parts = line.split(",", 1)
+        if len(parts) == 2:
+            cameras.append({"id": parts[0].strip(), "name": parts[1].strip()})
+
+    return cameras
+
+
+def _compute_sync_changes(unvr_cameras):
+    """Compare UNVR cameras against the current index and compute a change set.
+
+    Returns (changes, index_data) where changes is a list of dicts describing
+    each action:
+      {"action": "add"|"disable"|"update_name", "camera": {...}, ...}
+    """
+    data = _read_index()
+    index_cams = {c["id"]: c for c in data.get("cameras", [])}
+    unvr_map = {c["id"]: c["name"] for c in unvr_cameras}
+
+    changes = []
+
+    # Cameras on UNVR but not in index → add as disabled
+    for uid, uname in unvr_map.items():
+        if uid not in index_cams:
+            changes.append({
+                "action": "add",
+                "camera_id": uid,
+                "name": uname,
+                "enabled": False,
+                "reason": "exists on UNVR but not in config",
+            })
+
+    # Cameras in index but not on UNVR → disable
+    for iid, icam in index_cams.items():
+        if iid not in unvr_map:
+            if icam.get("enabled", True):
+                changes.append({
+                    "action": "disable",
+                    "camera_id": iid,
+                    "name": icam.get("name"),
+                    "reason": "exists in config but not on UNVR",
+                })
+
+    # Cameras in both → check name
+    for iid, icam in index_cams.items():
+        if iid in unvr_map:
+            unvr_name = unvr_map[iid]
+            index_name = icam.get("name")
+            if index_name != unvr_name:
+                changes.append({
+                    "action": "update_name",
+                    "camera_id": iid,
+                    "old_name": index_name,
+                    "new_name": unvr_name,
+                    "reason": "name differs between UNVR and config",
+                })
+
+    return changes, data
+
+
+def _apply_sync_changes(changes, data):
+    """Apply computed sync changes to the index data and write it.
+
+    Returns the updated cameras list.
+    """
+    index_cams = {c["id"]: c for c in data.get("cameras", [])}
+
+    for change in changes:
+        action = change["action"]
+        cid = change["camera_id"]
+
+        if action == "add":
+            entry = {"id": cid, "name": change["name"], "enabled": False}
+            index_cams[cid] = entry
+
+        elif action == "disable":
+            if cid in index_cams:
+                index_cams[cid]["enabled"] = False
+
+        elif action == "update_name":
+            if cid in index_cams:
+                index_cams[cid]["name"] = change["new_name"]
+
+    # Rebuild the cameras list sorted by name for consistency
+    cameras = sorted(index_cams.values(), key=lambda c: c.get("name", ""))
+    data["cameras"] = cameras
+    data["last_synced"] = int(time.time())
+    _write_index(data)
+
+    return cameras
+
+
 def _build_status():
     """Build the response payload for GET /api/status."""
     now = int(time.time())
@@ -252,6 +583,7 @@ def _build_status():
             "delete_local": S3_DELETE_LOCAL,
         },
         "camera_index": _build_cameras(),
+        "last_synced": _read_index().get("last_synced"),
     }
     return status
 
@@ -562,7 +894,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(result)
 
         elif path == "/api/cameras":
-            self._send_json(_build_cameras())
+            camera_id = qs.get("camera_id")
+            result, err = _build_cameras_detail(camera_id=camera_id)
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
+        elif path == "/api/cameras/sync":
+            try:
+                unvr_cameras = _query_unvr_cameras()
+            except RuntimeError as exc:
+                self._send_json(
+                    {"error": str(exc)}, status=502,
+                )
+                return
+
+            changes, _ = _compute_sync_changes(unvr_cameras)
+            self._send_json({
+                "unvr_cameras": len(unvr_cameras),
+                "changes": changes,
+                "total_changes": len(changes),
+            })
         elif path == "/api/health":
             self._send_json({"ok": True})
         else:
@@ -571,10 +923,12 @@ class Handler(BaseHTTPRequestHandler):
                 "GET    /api/backups",
                 "GET    /api/playback?camera_id=<id>&start=<epoch_ms>&end=<epoch_ms>",
                 "POST   /api/backup",
-                "GET    /api/cameras",
+                "GET    /api/cameras[?camera_id=<id>]",
                 "POST   /api/cameras",
                 "PUT    /api/cameras",
                 "DELETE /api/cameras",
+                "GET    /api/cameras/sync",
+                "POST   /api/cameras/sync",
                 "GET    /api/health",
             ]}, status=404)
 
@@ -609,6 +963,37 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": err}, status=409)
             else:
                 self._send_json(result, status=202)
+
+        elif path == "/api/cameras/sync":
+            try:
+                unvr_cameras = _query_unvr_cameras()
+            except RuntimeError as exc:
+                self._send_json(
+                    {"error": str(exc)}, status=502,
+                )
+                return
+
+            changes, data = _compute_sync_changes(unvr_cameras)
+            if not changes:
+                # Still update the sync timestamp
+                data["last_synced"] = int(time.time())
+                _write_index(data)
+                self._send_json({
+                    "synced": True,
+                    "changes_applied": 0,
+                    "cameras": data.get("cameras", []),
+                    "last_synced": data["last_synced"],
+                })
+                return
+
+            cameras = _apply_sync_changes(changes, data)
+            self._send_json({
+                "synced": True,
+                "changes_applied": len(changes),
+                "changes": changes,
+                "cameras": cameras,
+                "last_synced": data["last_synced"],
+            })
 
         elif path == "/api/cameras":
             body = self._read_json_body()
