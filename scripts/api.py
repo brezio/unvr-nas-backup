@@ -264,22 +264,24 @@ def _unvr_ranges(camera_id=None):
         where_clause = f"WHERE c.id = '{camera_id}'"
 
     sql = (
-        f"SELECT c.id, MIN(rf.start), MAX(rf.\\\"end\\\"), COUNT(*) "
-        f"FROM cameras c "
-        f"JOIN \\\"recordingFiles\\\" rf ON c.id = rf.\\\"cameraId\\\" "
-        f"{where_clause} "
-        f"GROUP BY c.id"
+        f'SELECT c.id, MIN(rf.start), MAX(rf."end"), COUNT(*) '
+        f'FROM cameras c '
+        f'JOIN "recordingFiles" rf ON c.id = rf."cameraId" '
+        f'{where_clause} '
+        f'GROUP BY c.id'
     )
-    cmd = (
-        f"ssh {SSH_OPTS} {PROTECT_SSH_USER}@{PROTECT_HOST} "
-        f"\"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} "
-        f"-At -F, -c \\\"{sql}\\\"\""
-    )
+    # Build SSH command as a list to avoid nested shell escaping issues.
+    # The SQL is passed via stdin to psql so no quoting of identifiers
+    # like "recordingFiles" is needed beyond what PostgreSQL requires.
+    ssh_cmd = SSH_OPTS.split() + [
+        f"{PROTECT_SSH_USER}@{PROTECT_HOST}",
+        f"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At -F,",
+    ]
 
     try:
         result = subprocess.run(
-            cmd, shell=True,
-            capture_output=True, text=True, timeout=15,
+            ["ssh"] + ssh_cmd,
+            input=sql, capture_output=True, text=True, timeout=15,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("SSH connection to UNVR timed out")
@@ -445,21 +447,16 @@ def _query_unvr_cameras():
     if not SSH_OPTS:
         raise RuntimeError("SSH_OPTS is not set (container may not be fully initialized)")
 
-    sql = (
-        "COPY (SELECT id, name FROM cameras ORDER BY name) "
-        "TO STDOUT WITH CSV HEADER;"
-    )
-    cmd = (
-        f"ssh {SSH_OPTS} {PROTECT_SSH_USER}@{PROTECT_HOST} "
-        f"\"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At -c "
-        f"\\\"COPY (SELECT id, name FROM cameras ORDER BY name) "
-        f"TO STDOUT WITH CSV HEADER;\\\"\""
-    )
+    sql = "COPY (SELECT id, name FROM cameras ORDER BY name) TO STDOUT WITH CSV HEADER;"
+    ssh_cmd = SSH_OPTS.split() + [
+        f"{PROTECT_SSH_USER}@{PROTECT_HOST}",
+        f"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At",
+    ]
 
     try:
         result = subprocess.run(
-            cmd, shell=True,
-            capture_output=True, text=True, timeout=15,
+            ["ssh"] + ssh_cmd,
+            input=sql, capture_output=True, text=True, timeout=15,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("SSH connection to UNVR timed out")
