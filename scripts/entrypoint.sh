@@ -111,12 +111,6 @@ CRON_LINE="${CRON_SCHEDULE} /usr/local/bin/backup.sh >> /proc/1/fd/1 2>> /proc/1
 echo "$CRON_LINE" | crontab -
 log "Cron installed: ${CRON_SCHEDULE}"
 
-# ── Optional immediate run ───────────────────────────────────────────────────
-if [ "${RUN_ON_START}" = "true" ]; then
-    log "Running initial backup..."
-    /usr/local/bin/backup.sh || log "WARN: initial backup exited with code $?"
-fi
-
 # ── Start API server (background) ───────────────────────────────────────────
 API_ENABLED="${API_ENABLED:-true}"
 API_PORT="${API_PORT:-7550}"
@@ -124,6 +118,12 @@ API_PORT="${API_PORT:-7550}"
 if [ "$API_ENABLED" = "true" ]; then
     log "Starting API server on port ${API_PORT}"
     python3 /usr/local/bin/api.py &
+fi
+
+# ── Optional immediate run ───────────────────────────────────────────────────
+if [ "${RUN_ON_START}" = "true" ]; then
+    log "Running initial backup..."
+    /usr/local/bin/backup.sh || log "WARN: initial backup exited with code $?"
 fi
 
 # ── Start cron (foreground, PID 1) ──────────────────────────────────────────
