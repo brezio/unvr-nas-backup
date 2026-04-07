@@ -159,9 +159,9 @@ curl -X POST http://<nas-ip>:7550/api/cameras \
   -d '{"camera_id": "63a1f2bcde0400038f000123", "name": "Front Door"}'
 
 # Disable a camera (stop backing it up)
-curl -X PUT http://<nas-ip>:7550/api/cameras \
+curl -X PATCH http://<nas-ip>:7550/api/cameras/63a1f2bcde0400038f000123 \
   -H "Content-Type: application/json" \
-  -d '{"camera_id": "63a1f2bcde0400038f000123", "enabled": false}'
+  -d '{"enabled": false}'
 
 # Remove a camera from the index
 curl -X DELETE "http://<nas-ip>:7550/api/cameras?camera_id=63a1f2bcde0400038f000123"
@@ -435,21 +435,22 @@ Response (`201 Created`):
 
 Returns `409 Conflict` if the camera already exists in the index.
 
-### `PUT /api/cameras`
+### `PATCH /api/cameras/{camera_id}`
 
-Updates an existing camera in the index (e.g. to enable/disable it or change its name).
+Updates an existing camera in the index. Only the fields provided in the request body are changed — omitted fields are left as-is.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `camera_id` | string | yes | Protect database ID of the camera |
 | `name` | string | no | Updated name |
 | `enabled` | boolean | no | Updated enabled state |
 
+At least one field is required.
+
 ```bash
-# Disable a camera (stop backing it up)
-curl -X PUT http://<nas-ip>:7550/api/cameras \
+# Disable a camera (stop backing it up) — name remains unchanged
+curl -X PATCH http://<nas-ip>:7550/api/cameras/63a1f2bcde0400038f000123 \
   -H "Content-Type: application/json" \
-  -d '{"camera_id": "63a1f2bcde0400038f000123", "enabled": false}'
+  -d '{"enabled": false}'
 ```
 
 Response (`200 OK`):

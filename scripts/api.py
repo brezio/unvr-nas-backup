@@ -12,7 +12,7 @@ Endpoints:
     POST   /api/backup        — trigger a backup (optional camera_id and time range)
     GET    /api/cameras       — list cameras in the index
     POST   /api/cameras       — add a camera to the index
-    PUT    /api/cameras       — update a camera in the index
+    PATCH  /api/cameras/{id}  — update a camera in the index
     DELETE /api/cameras       — remove a camera from the index
     GET    /api/cameras/sync  — preview changes from UNVR (dry run)
     POST   /api/cameras/sync  — sync camera index with UNVR and apply changes
@@ -922,7 +922,7 @@ class Handler(BaseHTTPRequestHandler):
                 "POST   /api/backup",
                 "GET    /api/cameras[?camera_id=<id>]",
                 "POST   /api/cameras",
-                "PUT    /api/cameras",
+                "PATCH  /api/cameras/{id}",
                 "DELETE /api/cameras",
                 "GET    /api/cameras/sync",
                 "POST   /api/cameras/sync",
@@ -1052,21 +1052,22 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, status=404)
 
-    def do_PUT(self):
+    def do_PATCH(self):
         path, _ = self._parse_query()
 
-        if path == "/api/cameras":
+        # Match /api/cameras/{camera_id}
+        if path.startswith("/api/cameras/") and path.count("/") == 3:
+            camera_id = path.split("/")[3]
+            if not camera_id:
+                self._send_json(
+                    {"error": "camera_id is required in the URL path"},
+                    status=400,
+                )
+                return
+
             body = self._read_json_body()
             if body is None:
                 self._send_json({"error": "invalid JSON body"}, status=400)
-                return
-
-            camera_id = body.get("camera_id") or body.get("id")
-            if not camera_id:
-                self._send_json(
-                    {"error": "camera_id is required"},
-                    status=400,
-                )
                 return
 
             name = body.get("name")
