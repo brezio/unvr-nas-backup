@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         procps \
         unzip \
-        python3-minimal \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AWS CLI v2 — pick the right binary for the build platform
