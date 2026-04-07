@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         procps \
         unzip \
+        python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AWS CLI v2 — pick the right binary for the build platform
@@ -36,7 +37,8 @@ RUN case "${TARGETARCH}" in \
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/backup.sh /usr/local/bin/backup.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/backup.sh
+COPY scripts/api.py /usr/local/bin/api.py
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/backup.sh /usr/local/bin/api.py
 
 RUN mkdir -p /staging /archive
 

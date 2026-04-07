@@ -88,7 +88,7 @@ fi
 # Cron jobs don't inherit the container's environment, so we dump it to a file
 # that backup.sh will source.
 # Quote values so sourcing is safe (handles spaces in SSH_OPTS, paths, etc.)
-env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=|RETENTION_|S3_|AWS_)' \
+env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=|RETENTION_|S3_|AWS_|API_)' \
     | while IFS='=' read -r key value; do
         printf "%s='%s'\n" "$key" "${value//\'/\'\\\'\'}"
     done > /etc/environment
@@ -102,6 +102,15 @@ log "Cron installed: ${CRON_SCHEDULE}"
 if [ "${RUN_ON_START}" = "true" ]; then
     log "Running initial backup..."
     /usr/local/bin/backup.sh || log "WARN: initial backup exited with code $?"
+fi
+
+# ── Start API server (background) ───────────────────────────────────────────
+API_ENABLED="${API_ENABLED:-true}"
+API_PORT="${API_PORT:-7550}"
+
+if [ "$API_ENABLED" = "true" ]; then
+    log "Starting API server on port ${API_PORT}"
+    python3 /usr/local/bin/api.py &
 fi
 
 # ── Start cron (foreground, PID 1) ──────────────────────────────────────────

@@ -25,7 +25,6 @@ S3_REGION="${S3_REGION:-us-east-1}"
 S3_STORAGE_CLASS="${S3_STORAGE_CLASS:-STANDARD}"
 S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-}"
 S3_DELETE_LOCAL="${S3_DELETE_LOCAL:-false}"
-BACKUP_USE_CAMERA_ID="${BACKUP_USE_CAMERA_ID:-false}"
 
 STAGING_DIR="/staging"
 REMUX_DIR="${STAGING_DIR}/remuxed"
@@ -251,9 +250,37 @@ remote_scp() {
 }
 
 # ── Step 1: Query DB for recent recording files ─────────────────────────────
-log "Querying recordings from the last ${BACKUP_HOURS}h (channels: ${CHANNEL_LIST})..."
+# Optional overrides (set by API trigger, not intended for .env)
+BACKUP_CAMERA_ID="${BACKUP_CAMERA_ID:-}"
+BACKUP_START="${BACKUP_START:-}"
+BACKUP_END="${BACKUP_END:-}"
 
-LOOKBACK_MS=$((BACKUP_HOURS * 3600 * 1000))
+# Build time range filter
+if [ -n "$BACKUP_START" ] || [ -n "$BACKUP_END" ]; then
+    TIME_FILTER=""
+    if [ -n "$BACKUP_START" ]; then
+        [[ "$BACKUP_START" =~ ^[0-9]+$ ]] || die "BACKUP_START must be epoch milliseconds"
+        TIME_FILTER="AND rf.\"end\" > ${BACKUP_START}"
+    fi
+    if [ -n "$BACKUP_END" ]; then
+        [[ "$BACKUP_END" =~ ^[0-9]+$ ]] || die "BACKUP_END must be epoch milliseconds"
+        TIME_FILTER="${TIME_FILTER} AND rf.start < ${BACKUP_END}"
+    fi
+    log "Querying recordings (time range: start=${BACKUP_START:-any} end=${BACKUP_END:-any}, channels: ${CHANNEL_LIST})..."
+else
+    LOOKBACK_MS=$((BACKUP_HOURS * 3600 * 1000))
+    TIME_FILTER="AND rf.\"end\" > (extract(epoch from now()) * 1000 - ${LOOKBACK_MS})"
+    log "Querying recordings from the last ${BACKUP_HOURS}h (channels: ${CHANNEL_LIST})..."
+fi
+
+# Build optional camera filter
+CAMERA_FILTER=""
+if [ -n "$BACKUP_CAMERA_ID" ]; then
+    # Validate: camera IDs are hex strings (Protect uses 24-char hex ObjectIds)
+    [[ "$BACKUP_CAMERA_ID" =~ ^[a-fA-F0-9]+$ ]] || die "BACKUP_CAMERA_ID must be a valid hex ID"
+    CAMERA_FILTER="AND c.id = '${BACKUP_CAMERA_ID}'"
+    log "Filtering to camera: ${BACKUP_CAMERA_ID}"
+fi
 
 CSV=$(remote "psql -p ${PROTECT_DB_PORT} -U postgres -d ${PROTECT_DB_NAME} -At" <<EOSQL
 COPY (
@@ -262,7 +289,8 @@ COPY (
     JOIN "recordingFiles" rf ON c.id = rf."cameraId"
     WHERE rf.type = 'rotating'
       AND rf.active = false
-      AND rf."end" > (extract(epoch from now()) * 1000 - ${LOOKBACK_MS})
+      ${TIME_FILTER}
+      ${CAMERA_FILTER}
       AND rf.channel IN (${CHANNEL_LIST})
     ORDER BY rf."end" ASC
 ) TO STDOUT WITH CSV HEADER;
@@ -289,19 +317,12 @@ skipped=0
 batch_count=0
 
 while IFS=',' read -r cam_name file folder start_ts end_ts channel cam_id; do
-    # Choose camera label based on BACKUP_USE_CAMERA_ID setting
-    if [ "$BACKUP_USE_CAMERA_ID" = "true" ]; then
-        cam_label="$cam_id"
-    else
-        cam_label="$cam_name"
-    fi
-
     # Build remote path
     ubv_path="${folder}/${file}"
     local_ubv="${STAGING_DIR}/ubv/${file}"
 
-    # Build final archive path to check for duplicates
-    build_archive_path "$cam_label" "$start_ts" "$end_ts" "$channel"
+    # Build final archive path to check for duplicates (uses camera ID for stable paths)
+    build_archive_path "$cam_id" "$start_ts" "$end_ts" "$channel"
 
     # Skip if already archived
     if [ -f "$final_path" ]; then
@@ -337,7 +358,6 @@ while IFS=',' read -r cam_name file folder start_ts end_ts channel cam_id; do
     cat > "${STAGING_DIR}/${file}.meta" <<METAEOF
 cam_name='${cam_name//\'/\'\\\'\'}'
 cam_id='${cam_id//\'/\'\\\'\'}'
-cam_label='${cam_label//\'/\'\\\'\'}'
 start_ts='${start_ts}'
 end_ts='${end_ts}'
 channel='${channel}'
@@ -412,8 +432,8 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
         continue
     fi
 
-    # Build archive path (uses cam_label: either name or ID based on BACKUP_USE_CAMERA_ID)
-    build_archive_path "$cam_label" "$start_ts" "$end_ts" "$channel"
+    # Build archive path (uses camera ID for stable, rename-safe paths)
+    build_archive_path "$cam_id" "$start_ts" "$end_ts" "$channel"
 
     mkdir -p "$archive_subdir"
     mv "$mp4_file" "${archive_subdir}/${final_name}"
@@ -452,7 +472,7 @@ if [ "$S3_ENABLED" = "true" ] && [ "$archived" -gt 0 ]; then
         # shellcheck disable=SC1090
         . "$meta_file"
 
-        build_archive_path "$cam_label" "$start_ts" "$end_ts" "$channel"
+        build_archive_path "$cam_id" "$start_ts" "$end_ts" "$channel"
 
         # Only upload files that were just archived (exist in the archive)
         [ -f "$final_path" ] || continue

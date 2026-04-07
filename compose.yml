@@ -5,6 +5,8 @@ services:
     container_name: unvr-nas-backup
     restart: unless-stopped
     env_file: .env
+    ports:
+      - "${API_PORT:-7550}:${API_PORT:-7550}"
     volumes:
       - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh-mount:ro
       - staging:/staging

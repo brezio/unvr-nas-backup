@@ -9,7 +9,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/Ozark-Connect/unvr-nas-backup)](https://github.com/Ozark-Connect/unvr-nas-backup/stargazers)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Ozark-Connect/unvr-nas-backup/blob/main/LICENSE)
 
-Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera names, and archives them to a NAS.
+Dockerized backup system that pulls continuous surveillance video from a UniFi Protect device (CloudKey, UCG, UDM, UNVR, etc.), remuxes `.ubv` files to `.mp4`, renames them with camera IDs and timestamps, and archives them to a NAS.
 
 > **Note:** Recordings can only be backed up after the Protect device finishes writing them. UniFi Protect writes ~1 GB `.ubv` segments; busy cameras close segments quickly, but **low-activity cameras may take many hours** to fill a segment, so there can be a significant delay before those recordings appear in the archive. This is **not** real-time replication - it is near-real-time archival. For the best coverage, pair this tool with UniFi Protect's built-in **Continuous Archiving** (UI Labs) feature, which handles detection event clips. As far as we know, this is the only open-source tool that backs up continuous recording video.
 
@@ -24,9 +24,9 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 │  2. SCP .ubv to staging│
 │  3. Remux → .mp4       │          Amazon S3 (optional)
 │  4. Rename with camera │          ┌─────────────────────────┐
-│     name + timestamps  │── S3 --> │  by-camera/CamName/     │
+│     ID + timestamps    │── S3 --> │  by-camera/CamID/       │
 │  5. Archive to         │          │    date/*.mp4           │
-│     /CamName/date/     │          └─────────────────────────┘
+│     /CamID/date/       │          └─────────────────────────┘
 │  6. Upload to S3       │
 │  7. (optional) Delete  │
 │     local files        │
@@ -128,6 +128,134 @@ cd / && rm -rf /opt/unvr-nas-backup # remove install directory
 
 Your archive directory is **not** deleted automatically. Remove it manually if you no longer need the recordings.
 
+## Status API
+
+The container includes a lightweight JSON API for monitoring backup health and browsing the archive. It is enabled by default on port `7550`.
+
+```bash
+# Backup health and configuration
+curl http://<nas-ip>:7550/api/status
+
+# List all archived recordings with local/S3 location
+curl http://<nas-ip>:7550/api/backups
+
+# Trigger a backup (uses system defaults)
+curl -X POST http://<nas-ip>:7550/api/backup
+
+# Trigger a backup for a specific camera and time range
+curl -X POST http://<nas-ip>:7550/api/backup \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123", "start": 1744000000000, "end": 1744034400000}'
+
+# Simple health check
+curl http://<nas-ip>:7550/api/health
+```
+
+### `GET /api/status`
+
+Returns the current backup state, last success time, archive disk usage, cron schedule, and S3 configuration.
+
+```json
+{
+  "status": "idle",
+  "last_success_epoch": 1744034400,
+  "last_success_age_seconds": 482,
+  "cron_schedule": "*/15 * * * *",
+  "archive": {
+    "total_bytes": 536870912000,
+    "used_bytes": 128849018880,
+    "free_bytes": 408021893120,
+    "used_percent": 24.0
+  },
+  "s3": {
+    "enabled": true,
+    "bucket": "my-protect-backups",
+    "prefix": "unifi-protect",
+    "region": "us-east-1",
+    "storage_class": "STANDARD_IA",
+    "delete_local": false
+  }
+}
+```
+
+The `status` field is `"running"` when a backup is in progress and `"idle"` otherwise. `last_success_epoch` is `null` until the first successful backup completes.
+
+### `GET /api/backups`
+
+Lists every archived recording grouped by camera, with `local` and `s3` booleans indicating where each file exists. When S3 is enabled, the endpoint queries S3 once to build a full inventory.
+
+```json
+{
+  "cameras": {
+    "63a1f2bcde0400038f000123": [
+      {
+        "file": "63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4",
+        "path": "63a1f2bcde0400038f000123/2026-02-19/63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4",
+        "size_bytes": 104857600,
+        "local": true,
+        "s3": true
+      }
+    ],
+    "74b2e3cdef0500049g111234": [
+      {
+        "file": "74b2e3cdef0500049g111234_2026-02-19_08-00-00_to_08-10-00.mp4",
+        "path": "74b2e3cdef0500049g111234/2026-02-19/74b2e3cdef0500049g111234_2026-02-19_08-00-00_to_08-10-00.mp4",
+        "size_bytes": null,
+        "local": false,
+        "s3": true
+      }
+    ]
+  },
+  "total_recordings": 150,
+  "total_local": 120,
+  "total_s3": 150
+}
+```
+
+Files where `local` is `false` and `s3` is `true` were uploaded to S3 and then deleted locally (via `S3_DELETE_LOCAL`). `size_bytes` is `null` for S3-only files.
+
+> **Note:** For large archives the `/api/backups` endpoint may take several seconds to respond, especially when S3 inventory is being queried.
+
+### `POST /api/backup`
+
+Triggers a backup run. The backup starts asynchronously and the endpoint returns immediately with a `202 Accepted`. If a backup is already running, returns `409 Conflict`.
+
+All parameters are optional. When omitted, the system defaults from `.env` are used (`BACKUP_HOURS` for time range, all cameras).
+
+| Field | Type | Description |
+|---|---|---|
+| `camera_id` | string | Protect database ID of a single camera to back up |
+| `start` | number | Start of time range in epoch milliseconds. Recordings that end after this time are included. |
+| `end` | number | End of time range in epoch milliseconds. Recordings that start before this time are included. |
+
+```bash
+# Back up everything from the last hour (system defaults)
+curl -X POST http://<nas-ip>:7550/api/backup
+
+# Back up a specific camera only
+curl -X POST http://<nas-ip>:7550/api/backup \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123"}'
+
+# Back up a specific 6-hour window
+curl -X POST http://<nas-ip>:7550/api/backup \
+  -H "Content-Type: application/json" \
+  -d '{"start": 1744000000000, "end": 1744021600000}'
+```
+
+Response (`202 Accepted`):
+
+```json
+{
+  "triggered": true,
+  "params": {
+    "camera_id": "63a1f2bcde0400038f000123"
+  }
+}
+```
+
+When no overrides are provided, `params` is `"defaults"`. Use `GET /api/status` to check whether the triggered backup is still running.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -139,7 +267,6 @@ Your archive directory is **not** deleted automatically. Remove it manually if y
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
 | `BACKUP_HOURS` | `1` | How many hours back to look for completed recordings (based on end time). Set this to at least 2x your cron interval so recordings that finish between runs are not missed. |
 | `BACKUP_CHANNELS` | `0` | Which recording channels to back up (comma-separated). `0` = main high-res stream, `2` = low-quality sub-stream. Most users only need `0`. |
-| `BACKUP_USE_CAMERA_ID` | `false` | Use camera database IDs instead of names for archive directories and filenames. Useful when camera names contain special characters, are duplicated, or are frequently renamed. |
 | `BATCH_SIZE` | `5` | Number of files to SCP before pausing |
 | `BATCH_DELAY` | `30` | Seconds to pause between SCP batches |
 | `ARCHIVE_PATH` | *(required)* | Host path for the archive volume mount |
@@ -148,6 +275,8 @@ Your archive directory is **not** deleted automatically. Remove it manually if y
 | `RUN_ON_START` | `true` | Run a backup immediately on container start |
 | `TZ` | `UTC` | Timezone for log messages. Archive filenames always use UTC regardless of this setting. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `API_ENABLED` | `true` | Enable the built-in status API. Set to `false` to disable. |
+| `API_PORT` | `7550` | Port the status API listens on |
 | `RETENTION_DAYS` | *(disabled)* | Delete footage older than N days. Runs after each backup. |
 | `RETENTION_PERCENT` | *(disabled)* | When disk usage exceeds N%, prune oldest footage until it drops below. Runs after each backup. |
 
@@ -184,11 +313,11 @@ If running on an EC2 instance with an IAM instance profile, neither is needed �
 s3://my-protect-backups/
 └── unifi-protect/                     ← S3_PREFIX (optional)
     └── by-camera/
-        ├── Front-Door/
+        ├── 63a1f2bcde0400038f000123/
         │   └── 2026-02-19/
-        │       ├── Front-Door_2026-02-19_08-00-00_to_08-05-00.mp4
+        │       ├── 63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4
         │       └── ...
-        └── Backyard/
+        └── 74b2e3cdef0500049g111234/
             └── ...
 ```
 
@@ -223,34 +352,32 @@ Should work on any device running UniFi Protect with SSH access, PostgreSQL on p
 
 ## Archive structure
 
-Files are stored canonically by camera, with date-based symlinks for browsing by date:
+Archive directories and filenames use the camera's Protect database ID rather than its display name. This ensures stable, rename-safe paths regardless of how cameras are named in the Protect UI.
 
 ```
 /archive/
-├── by-camera/                          # Canonical storage
-│   ├── Front-Door/
+├── by-camera/                          # Canonical storage (by camera ID)
+│   ├── 63a1f2bcde0400038f000123/
 │   │   ├── 2026-02-19/
-│   │   │   ├── Front-Door_2026-02-19_08-00-00_to_08-05-00.mp4
-│   │   │   └── Front-Door_2026-02-19_08-05-00_to_08-10-00.mp4
+│   │   │   ├── 63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4
+│   │   │   └── 63a1f2bcde0400038f000123_2026-02-19_08-05-00_to_08-10-00.mp4
 │   │   ├── 2026-02-20/
 │   │   │   └── ...
 │   │   └── low-quality/                # Only if BACKUP_CHANNELS includes 2
 │   │       └── 2026-02-19/
-│   │           └── Front-Door_2026-02-19_00-00-00_to_10-00-00_low-quality.mp4
-│   └── Backyard/
+│   │           └── 63a1f2bcde0400038f000123_2026-02-19_00-00-00_to_10-00-00_low-quality.mp4
+│   └── 74b2e3cdef0500049g111234/
 │       └── ...
 └── by-date/                            # Symlinks
     ├── 2026-02-19/
-    │   ├── Front-Door             → ../../by-camera/Front-Door/2026-02-19
-    │   ├── Front-Door-low-quality → ../../by-camera/Front-Door/low-quality/2026-02-19
-    │   └── Backyard               → ../../by-camera/Backyard/2026-02-19
+    │   ├── 63a1f2bcde0400038f000123             → ../../by-camera/63a1f2bcde0400038f000123/2026-02-19
+    │   ├── 63a1f2bcde0400038f000123-low-quality → ../../by-camera/63a1f2bcde0400038f000123/low-quality/2026-02-19
+    │   └── 74b2e3cdef0500049g111234             → ../../by-camera/74b2e3cdef0500049g111234/2026-02-19
     └── 2026-02-20/
         └── ...
 ```
 
 > **Note:** The `by-date` directory uses symlinks, which may not be visible when browsing via SMB/Windows shares. The `by-camera` directory always works directly.
-
-When `BACKUP_USE_CAMERA_ID=true`, camera names are replaced by Protect database IDs (e.g., `63a1f2bcde0400038f000123/2026-02-19/63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4`). This avoids issues with special characters, duplicate names, or cameras being renamed after recordings are archived.
 
 ## Troubleshooting
 
