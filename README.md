@@ -24,7 +24,7 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 │  2. SCP .ubv to staging│
 │  3. Remux → .mp4       │          Amazon S3 (optional)
 │  4. Rename with camera │          ┌─────────────────────────┐
-│     ID + timestamps    │── S3 --> │  by-camera/CamID/       │
+│     ID + timestamps    │── S3 --> │  by-id/CamID/       │
 │  5. Archive to         │          │    date/*.mp4           │
 │     /CamID/date/       │          └─────────────────────────┘
 │  6. Upload to S3       │
@@ -149,6 +149,22 @@ curl -X POST http://<nas-ip>:7550/api/backup \
 
 # Simple health check
 curl http://<nas-ip>:7550/api/health
+
+# List cameras in the index
+curl http://<nas-ip>:7550/api/cameras
+
+# Add a camera to the index
+curl -X POST http://<nas-ip>:7550/api/cameras \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123", "name": "Front Door"}'
+
+# Disable a camera (stop backing it up)
+curl -X PUT http://<nas-ip>:7550/api/cameras \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123", "enabled": false}'
+
+# Remove a camera from the index
+curl -X DELETE "http://<nas-ip>:7550/api/cameras?camera_id=63a1f2bcde0400038f000123"
 ```
 
 ### `GET /api/status`
@@ -174,11 +190,18 @@ Returns the current backup state, last success time, archive disk usage, cron sc
     "region": "us-east-1",
     "storage_class": "STANDARD_IA",
     "delete_local": false
+  },
+  "camera_index": {
+    "cameras": [
+      {"id": "63a1f2bcde0400038f000123", "name": "Front Door", "enabled": true}
+    ],
+    "total": 1,
+    "enabled": 1
   }
 }
 ```
 
-The `status` field is `"running"` when a backup is in progress and `"idle"` otherwise. `last_success_epoch` is `null` until the first successful backup completes.
+The `status` field is `"running"` when a backup is in progress and `"idle"` otherwise. `last_success_epoch` is `null` until the first successful backup completes. The `camera_index` section summarizes the camera allow-list (see [Camera index](#camera-index) below).
 
 ### `GET /api/backups`
 
@@ -215,6 +238,59 @@ Lists every archived recording grouped by camera, with `local` and `s3` booleans
 Files where `local` is `false` and `s3` is `true` were uploaded to S3 and then deleted locally (via `S3_DELETE_LOCAL`). `size_bytes` is `null` for S3-only files.
 
 > **Note:** For large archives the `/api/backups` endpoint may take several seconds to respond, especially when S3 inventory is being queried.
+
+### `GET /api/playback`
+
+Given a camera ID and time range, returns the list of video files needed for continuous playback in the correct order, along with seek offsets into the first and last files to cover exactly the requested range.
+
+All three query parameters are required:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `camera_id` | string | Protect database ID of the camera |
+| `start` | integer | Start of the range in epoch milliseconds |
+| `end` | integer | End of the range in epoch milliseconds |
+
+```bash
+curl "http://<nas-ip>:7550/api/playback?camera_id=63a1f2bcde0400038f000123&start=1744000000000&end=1744003600000"
+```
+
+Response:
+
+```json
+{
+  "camera_id": "63a1f2bcde0400038f000123",
+  "range": {
+    "start_ms": 1744000000000,
+    "end_ms": 1744003600000
+  },
+  "files": [
+    {
+      "file": "63a1f2bcde0400038f000123_2026-04-07_08-00-00_to_08-05-00.mp4",
+      "path": "63a1f2bcde0400038f000123/2026-04-07/63a1f2bcde0400038f000123_2026-04-07_08-00-00_to_08-05-00.mp4",
+      "recording_start_ms": 1743998400000,
+      "recording_end_ms": 1744000700000
+    },
+    {
+      "file": "63a1f2bcde0400038f000123_2026-04-07_08-05-00_to_08-10-00.mp4",
+      "path": "63a1f2bcde0400038f000123/2026-04-07/63a1f2bcde0400038f000123_2026-04-07_08-05-00_to_08-10-00.mp4",
+      "recording_start_ms": 1744000700000,
+      "recording_end_ms": 1744003000000
+    }
+  ],
+  "playback": {
+    "start_offset_ms": 1600000,
+    "end_offset_ms": 2300000,
+    "start_offset_seconds": 1600.0,
+    "end_offset_seconds": 2300.0,
+    "total_files": 2
+  }
+}
+```
+
+The `files` array is sorted in chronological order. Play them sequentially, seeking to `start_offset_seconds` in the first file and stopping at `end_offset_seconds` in the last file. Files in between should be played in full.
+
+Returns `404` if the camera ID doesn't exist in the archive or no recordings overlap the requested range.
 
 ### `POST /api/backup`
 
@@ -255,6 +331,102 @@ Response (`202 Accepted`):
 ```
 
 When no overrides are provided, `params` is `"defaults"`. Use `GET /api/status` to check whether the triggered backup is still running.
+
+### Camera index
+
+The camera index (`/archive/_index.json`) controls which cameras are included in scheduled backup runs. When the `cameras` array is empty (or the file doesn't exist), **all cameras** are backed up — this is the backwards-compatible default.
+
+When cameras are added to the index, only cameras with `"enabled": true` are included in scheduled backups. API-triggered backups that specify an explicit `camera_id` bypass the index entirely.
+
+The index file is created automatically on first container start and persists in the archive volume.
+
+### `GET /api/cameras`
+
+Returns the current camera index.
+
+```json
+{
+  "cameras": [
+    {"id": "63a1f2bcde0400038f000123", "name": "Front Door", "enabled": true},
+    {"id": "74b2e3cdef0500049g111234", "name": "Garage", "enabled": false}
+  ],
+  "total": 2,
+  "enabled": 1
+}
+```
+
+Cameras with `"enabled": false` are in the index but excluded from scheduled backups.
+
+### `POST /api/cameras`
+
+Adds a camera to the index.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `camera_id` | string | yes | Protect database ID of the camera |
+| `name` | string | no | Human-readable label (informational only) |
+| `enabled` | boolean | no | Whether to include in scheduled backups (default `true`) |
+
+```bash
+curl -X POST http://<nas-ip>:7550/api/cameras \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123", "name": "Front Door"}'
+```
+
+Response (`201 Created`):
+
+```json
+{"id": "63a1f2bcde0400038f000123", "name": "Front Door", "enabled": true}
+```
+
+Returns `409 Conflict` if the camera already exists in the index.
+
+### `PUT /api/cameras`
+
+Updates an existing camera in the index (e.g. to enable/disable it or change its name).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `camera_id` | string | yes | Protect database ID of the camera |
+| `name` | string | no | Updated name |
+| `enabled` | boolean | no | Updated enabled state |
+
+```bash
+# Disable a camera (stop backing it up)
+curl -X PUT http://<nas-ip>:7550/api/cameras \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123", "enabled": false}'
+```
+
+Response (`200 OK`):
+
+```json
+{"id": "63a1f2bcde0400038f000123", "name": "Front Door", "enabled": false}
+```
+
+Returns `404` if the camera is not in the index.
+
+### `DELETE /api/cameras`
+
+Removes a camera from the index. Accepts the camera ID as a query parameter or in a JSON body.
+
+```bash
+# Via query parameter
+curl -X DELETE "http://<nas-ip>:7550/api/cameras?camera_id=63a1f2bcde0400038f000123"
+
+# Via JSON body
+curl -X DELETE http://<nas-ip>:7550/api/cameras \
+  -H "Content-Type: application/json" \
+  -d '{"camera_id": "63a1f2bcde0400038f000123"}'
+```
+
+Response (`200 OK`):
+
+```json
+{"removed": "63a1f2bcde0400038f000123"}
+```
+
+Returns `404` if the camera is not in the index. Removing all cameras from the index reverts to backing up all cameras.
 
 ## Configuration
 
@@ -307,12 +479,12 @@ After each backup run, archived `.mp4` files can be automatically uploaded to an
 
 If running on an EC2 instance with an IAM instance profile, neither is needed — the AWS CLI picks up the role automatically.
 
-**S3 file structure** — files are uploaded under the same `by-camera/` structure used locally:
+**S3 file structure** — files are uploaded under the same `by-id/` structure used locally:
 
 ```
 s3://my-protect-backups/
 └── unifi-protect/                     ← S3_PREFIX (optional)
-    └── by-camera/
+    └── by-id/
         ├── 63a1f2bcde0400038f000123/
         │   └── 2026-02-19/
         │       ├── 63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4
@@ -321,7 +493,9 @@ s3://my-protect-backups/
             └── ...
 ```
 
-**Upload verification** — each file is verified after upload by comparing the file size reported by S3 against the local file. If verification fails, the local file is kept and a warning is logged.
+**Sync strategy** — uploads use `aws s3 sync` with `max_concurrent_requests` set to 20 for parallel transfers. Only new or changed files (compared by size) are uploaded. Symlinks are excluded automatically.
+
+**Upload verification** — when `S3_DELETE_LOCAL` is enabled, each newly archived file is verified after the sync by comparing the file size reported by S3 against the local file. If verification fails, the local file is kept and a warning is logged.
 
 > **Warning — `S3_DELETE_LOCAL`**: When set to `true`, local `.mp4` files are deleted immediately after their S3 upload is verified. Once deleted, the **only** copy of those recordings lives in S3. Make sure your S3 bucket has versioning or cross-region replication configured if data durability is critical. Empty directories and stale by-date symlinks are cleaned up automatically.
 
@@ -356,7 +530,7 @@ Archive directories and filenames use the camera's Protect database ID rather th
 
 ```
 /archive/
-├── by-camera/                          # Canonical storage (by camera ID)
+├── by-id/                          # Canonical storage (by camera ID)
 │   ├── 63a1f2bcde0400038f000123/
 │   │   ├── 2026-02-19/
 │   │   │   ├── 63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4
@@ -370,14 +544,14 @@ Archive directories and filenames use the camera's Protect database ID rather th
 │       └── ...
 └── by-date/                            # Symlinks
     ├── 2026-02-19/
-    │   ├── 63a1f2bcde0400038f000123             → ../../by-camera/63a1f2bcde0400038f000123/2026-02-19
-    │   ├── 63a1f2bcde0400038f000123-low-quality → ../../by-camera/63a1f2bcde0400038f000123/low-quality/2026-02-19
-    │   └── 74b2e3cdef0500049g111234             → ../../by-camera/74b2e3cdef0500049g111234/2026-02-19
+    │   ├── 63a1f2bcde0400038f000123             → ../../by-id/63a1f2bcde0400038f000123/2026-02-19
+    │   ├── 63a1f2bcde0400038f000123-low-quality → ../../by-id/63a1f2bcde0400038f000123/low-quality/2026-02-19
+    │   └── 74b2e3cdef0500049g111234             → ../../by-id/74b2e3cdef0500049g111234/2026-02-19
     └── 2026-02-20/
         └── ...
 ```
 
-> **Note:** The `by-date` directory uses symlinks, which may not be visible when browsing via SMB/Windows shares. The `by-camera` directory always works directly.
+> **Note:** The `by-date` directory uses symlinks, which may not be visible when browsing via SMB/Windows shares. The `by-id` directory always works directly.
 
 ## Troubleshooting
 

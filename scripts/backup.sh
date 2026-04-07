@@ -29,6 +29,7 @@ S3_DELETE_LOCAL="${S3_DELETE_LOCAL:-false}"
 STAGING_DIR="/staging"
 REMUX_DIR="${STAGING_DIR}/remuxed"
 ARCHIVE_DIR="/archive"
+INDEX_FILE="${ARCHIVE_DIR}/_index.json"
 LOCKFILE="/tmp/backup.lock"
 FAILURES_FILE="${STAGING_DIR}/.remux-failures"
 
@@ -62,10 +63,10 @@ build_archive_path() {
 
     if [ -z "$label" ]; then
         final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}.mp4"
-        archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${date_str}"
+        archive_subdir="${ARCHIVE_DIR}/by-id/${safe_cam}/${date_str}"
     else
         final_name="${safe_cam}_${date_str}_${start_time}_to_${end_time}_${label}.mp4"
-        archive_subdir="${ARCHIVE_DIR}/by-camera/${safe_cam}/${label}/${date_str}"
+        archive_subdir="${ARCHIVE_DIR}/by-id/${safe_cam}/${label}/${date_str}"
     fi
     final_path="${archive_subdir}/${final_name}"
 }
@@ -84,7 +85,7 @@ prune_date_dir() {
         if [ -d "$target" ]; then
             count=$(( count + $(find "$target" -type f | wc -l) ))
             rm -rf "$target"
-            # Clean empty parents up to by-camera/
+            # Clean empty parents up to by-id/
             local parent
             parent=$(dirname "$target")
             rmdir "$parent" 2>/dev/null || true
@@ -147,13 +148,19 @@ s3_build_args() {
     echo "$args"
 }
 
-s3_upload_file() {
-    local local_file="$1" s3_key="$2"
+s3_sync() {
+    local local_dir="$1"
     local bucket_prefix="${S3_PREFIX:+${S3_PREFIX}/}"
-    local s3_uri="s3://${S3_BUCKET}/${bucket_prefix}${s3_key}"
+    local s3_uri="s3://${S3_BUCKET}/${bucket_prefix}by-id/"
+
+    # Configure max concurrent requests for parallel uploads
+    aws configure set default.s3.max_concurrent_requests 20
+
     # shellcheck disable=SC2086
-    aws s3 cp "$local_file" "$s3_uri" \
+    aws s3 sync "${local_dir}/" "$s3_uri" \
         --storage-class "$S3_STORAGE_CLASS" \
+        --size-only \
+        --no-follow-symlinks \
         $(s3_build_args) \
         --only-show-errors
 }
@@ -161,7 +168,6 @@ s3_upload_file() {
 s3_verify_file() {
     local s3_key="$1" expected_size="$2"
     local bucket_prefix="${S3_PREFIX:+${S3_PREFIX}/}"
-    local s3_uri="s3://${S3_BUCKET}/${bucket_prefix}${s3_key}"
     local remote_size
     # shellcheck disable=SC2086
     remote_size=$(aws s3api head-object \
@@ -185,6 +191,29 @@ delete_local_file() {
         parent=$(dirname "$parent")
     done
 }
+
+# ── Read camera index (allow-list) ──────────────────────────────────────────
+# _index.json at the archive root controls which cameras are backed up.
+# If the file is missing or its cameras array is empty, all cameras are included.
+# Only cameras with "enabled": true are backed up during scheduled runs.
+# API-triggered backups with an explicit BACKUP_CAMERA_ID bypass this filter.
+INDEX_CAMERA_IDS=""
+if [ -z "$BACKUP_CAMERA_ID" ] && [ -f "$INDEX_FILE" ]; then
+    # Extract enabled camera IDs using python3 (already in the container)
+    INDEX_CAMERA_IDS=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('${INDEX_FILE}'))
+    ids = [c['id'] for c in data.get('cameras', []) if c.get('enabled', True)]
+    if ids:
+        print(','.join(\"'\" + i + \"'\" for i in ids))
+except Exception:
+    pass
+" 2>/dev/null) || true
+    if [ -n "$INDEX_CAMERA_IDS" ]; then
+        debug "Camera index: filtering to $(echo "$INDEX_CAMERA_IDS" | tr -cd ',' | wc -c | awk '{print $1+1}') enabled camera(s)"
+    fi
+fi
 
 # ── Validate BACKUP_CHANNELS → SQL IN clause ────────────────────────────────
 CHANNEL_LIST=""
@@ -280,6 +309,10 @@ if [ -n "$BACKUP_CAMERA_ID" ]; then
     [[ "$BACKUP_CAMERA_ID" =~ ^[a-fA-F0-9]+$ ]] || die "BACKUP_CAMERA_ID must be a valid hex ID"
     CAMERA_FILTER="AND c.id = '${BACKUP_CAMERA_ID}'"
     log "Filtering to camera: ${BACKUP_CAMERA_ID}"
+elif [ -n "$INDEX_CAMERA_IDS" ]; then
+    # Use the camera index allow-list
+    CAMERA_FILTER="AND c.id IN (${INDEX_CAMERA_IDS})"
+    log "Filtering to cameras from _index.json"
 fi
 
 CSV=$(remote "psql -p ${PROTECT_DB_PORT} -U postgres -d ${PROTECT_DB_NAME} -At" <<EOSQL
@@ -443,10 +476,10 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
     label=$(channel_label "$channel")
     if [ -z "$label" ]; then
         bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
-        bydate_target="../../by-camera/${safe_cam}/${date_str}"
+        bydate_target="../../by-id/${safe_cam}/${date_str}"
     else
         bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}-${label}"
-        bydate_target="../../by-camera/${safe_cam}/${label}/${date_str}"
+        bydate_target="../../by-id/${safe_cam}/${label}/${date_str}"
     fi
     if [ ! -L "$bydate_link" ]; then
         mkdir -p "${ARCHIVE_DIR}/by-date/${date_str}"
@@ -459,68 +492,67 @@ done
 
 log "Archived ${archived} file(s) to ${ARCHIVE_DIR}"
 
-# ── Step 5: Upload to S3 (if enabled) ───────────────────────────────────────
-s3_uploaded=0
+# ── Step 5: Sync to S3 (if enabled) ────────────────────────────────────────
+s3_synced=false
 s3_deleted=0
 
 if [ "$S3_ENABLED" = "true" ] && [ "$archived" -gt 0 ]; then
-    log "Uploading ${archived} file(s) to S3 (bucket=${S3_BUCKET}, class=${S3_STORAGE_CLASS})..."
+    log "Syncing archive to S3 (bucket=${S3_BUCKET}, class=${S3_STORAGE_CLASS}, max_concurrent_requests=20)..."
 
-    for meta_file in "${STAGING_DIR}/"*.meta; do
-        [ -f "$meta_file" ] || continue
+    if s3_sync "${ARCHIVE_DIR}/by-id"; then
+        log "S3 sync completed successfully"
+        s3_synced=true
+    else
+        warn "S3 sync failed — local files will be kept"
+    fi
 
-        # shellcheck disable=SC1090
-        . "$meta_file"
+    # Post-sync: verify and optionally delete local files that were just archived
+    if [ "$s3_synced" = "true" ] && [ "$S3_DELETE_LOCAL" = "true" ]; then
+        log "Verifying uploads and deleting local copies..."
 
-        build_archive_path "$cam_id" "$start_ts" "$end_ts" "$channel"
+        for meta_file in "${STAGING_DIR}/"*.meta; do
+            [ -f "$meta_file" ] || continue
 
-        # Only upload files that were just archived (exist in the archive)
-        [ -f "$final_path" ] || continue
+            # shellcheck disable=SC1090
+            . "$meta_file"
 
-        # S3 key mirrors the by-camera/ structure
-        s3_key="by-camera/${final_path#"${ARCHIVE_DIR}/by-camera/"}"
-        local_size=$(stat -c%s "$final_path")
+            build_archive_path "$cam_id" "$start_ts" "$end_ts" "$channel"
 
-        debug "Uploading to S3: ${s3_key} (${local_size} bytes)"
-        if s3_upload_file "$final_path" "$s3_key"; then
-            # Verify the upload by checking file size in S3
+            # Only process files that exist locally
+            [ -f "$final_path" ] || continue
+
+            # S3 key mirrors the by-id/ structure
+            s3_key="by-id/${final_path#"${ARCHIVE_DIR}/by-id/"}"
+            local_size=$(stat -c%s "$final_path")
+
             if s3_verify_file "$s3_key" "$local_size"; then
-                debug "S3 upload verified: ${s3_key}"
-                s3_uploaded=$((s3_uploaded + 1))
+                delete_local_file "$final_path"
+                s3_deleted=$((s3_deleted + 1))
 
-                # Delete local file if configured
-                if [ "$S3_DELETE_LOCAL" = "true" ]; then
-                    delete_local_file "$final_path"
-                    s3_deleted=$((s3_deleted + 1))
-
-                    # Clean up the by-date symlink if the target directory is now empty
-                    label=$(channel_label "$channel")
-                    if [ -z "$label" ]; then
-                        bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
-                    else
-                        bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}-${label}"
-                    fi
-                    if [ -L "$bydate_link" ]; then
-                        link_target=$(readlink -f "$bydate_link")
-                        if [ -d "$link_target" ] && [ -z "$(ls -A "$link_target" 2>/dev/null)" ]; then
-                            rm -f "$bydate_link"
-                            rmdir "$link_target" 2>/dev/null || true
-                            # Clean empty by-date parent
-                            bydate_parent=$(dirname "$bydate_link")
-                            rmdir "$bydate_parent" 2>/dev/null || true
-                            debug "Cleaned up empty symlink: ${bydate_link}"
-                        fi
+                # Clean up the by-date symlink if the target directory is now empty
+                label=$(channel_label "$channel")
+                if [ -z "$label" ]; then
+                    bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
+                else
+                    bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}-${label}"
+                fi
+                if [ -L "$bydate_link" ]; then
+                    link_target=$(readlink -f "$bydate_link")
+                    if [ -d "$link_target" ] && [ -z "$(ls -A "$link_target" 2>/dev/null)" ]; then
+                        rm -f "$bydate_link"
+                        rmdir "$link_target" 2>/dev/null || true
+                        bydate_parent=$(dirname "$bydate_link")
+                        rmdir "$bydate_parent" 2>/dev/null || true
+                        debug "Cleaned up empty symlink: ${bydate_link}"
                     fi
                 fi
             else
-                warn "S3 upload verification failed for ${s3_key} — keeping local copy"
+                warn "S3 verification failed for ${s3_key} — keeping local copy"
             fi
-        else
-            warn "S3 upload failed for ${s3_key} — keeping local copy"
-        fi
-    done
+        done
 
-    log "S3: uploaded=${s3_uploaded}, local files deleted=${s3_deleted}"
+        log "S3: local files deleted=${s3_deleted}"
+    fi
 fi
 
 # ── Retention pruning ───────────────────────────────────────────────────────
@@ -530,7 +562,7 @@ fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 if [ "$S3_ENABLED" = "true" ]; then
-    log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived} s3_uploaded=${s3_uploaded} s3_deleted=${s3_deleted}"
+    log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived} s3_synced=${s3_synced} s3_deleted=${s3_deleted}"
 else
     log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived}"
 fi

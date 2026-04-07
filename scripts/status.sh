@@ -40,10 +40,10 @@ echo
 # Archive stats
 echo "--- Archive ---"
 archive="${ARCHIVE_PATH:-/archive}"
-by_camera="${archive}/by-camera"
-if [ -d "$by_camera" ]; then
-    camera_count=$(find "$by_camera" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-    file_count=$(find "$by_camera" -name '*.mp4' -type f 2>/dev/null | wc -l)
+by_id="${archive}/by-id"
+if [ -d "$by_id" ]; then
+    camera_count=$(find "$by_id" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    file_count=$(find "$by_id" -name '*.mp4' -type f 2>/dev/null | wc -l)
     total_size=$(du -sh "$archive" 2>/dev/null | cut -f1)
 
     echo "Path:    ${archive}"
@@ -55,7 +55,7 @@ if [ -d "$by_camera" ]; then
     # Per-camera breakdown
     if [ "$camera_count" -gt 0 ]; then
         echo "--- Per camera ---"
-        for cam_dir in "$by_camera"/*/; do
+        for cam_dir in "$by_id"/*/; do
             [ -d "$cam_dir" ] || continue
             cam_name=$(basename "$cam_dir")
             cam_files=$(find "$cam_dir" -name '*.mp4' -type f 2>/dev/null | wc -l)

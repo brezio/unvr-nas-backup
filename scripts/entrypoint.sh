@@ -84,6 +84,19 @@ if [ "$S3_ENABLED" = "true" ]; then
     fi
 fi
 
+# ── Initialize camera index ─────────────────────────────────────────────────
+# Create _index.json if it doesn't exist. An empty cameras array means
+# "back up all cameras" (backwards-compatible default).
+INDEX_FILE="/archive/_index.json"
+if [ ! -f "$INDEX_FILE" ]; then
+    log "Creating camera index: ${INDEX_FILE}"
+    cat > "$INDEX_FILE" <<'INDEXEOF'
+{
+  "cameras": []
+}
+INDEXEOF
+fi
+
 # ── Export env for cron ──────────────────────────────────────────────────────
 # Cron jobs don't inherit the container's environment, so we dump it to a file
 # that backup.sh will source.

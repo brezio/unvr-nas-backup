@@ -6,17 +6,25 @@ so no pip dependencies are required. Reads the same environment variables and
 file-system state that backup.sh uses.
 
 Endpoints:
-    GET  /api/status   — current backup health and configuration
-    GET  /api/backups  — list all archived recordings with local/S3 location
-    POST /api/backup   — trigger a backup (optional camera_id and time range)
+    GET    /api/status   — current backup health and configuration
+    GET    /api/backups  — list all archived recordings with local/S3 location
+    GET    /api/playback — files needed to play back a camera's footage for a time range
+    POST   /api/backup   — trigger a backup (optional camera_id and time range)
+    GET    /api/cameras  — list cameras in the index
+    POST   /api/cameras  — add a camera to the index
+    PUT    /api/cameras  — update a camera in the index
+    DELETE /api/cameras  — remove a camera from the index
 """
 
+import calendar
 import json
 import os
+import re
 import subprocess
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -35,6 +43,8 @@ S3_DELETE_LOCAL = os.environ.get("S3_DELETE_LOCAL", "false") == "true"
 S3_STORAGE_CLASS = os.environ.get("S3_STORAGE_CLASS", "STANDARD")
 
 CRON_SCHEDULE = os.environ.get("CRON_SCHEDULE", "*/15 * * * *")
+
+INDEX_FILE = ARCHIVE_DIR / "_index.json"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -95,7 +105,7 @@ def _s3_list_keys():
     cmd = [
         "aws", "s3api", "list-objects-v2",
         "--bucket", S3_BUCKET,
-        "--prefix", f"{prefix}by-camera/",
+        "--prefix", f"{prefix}by-id/",
         "--query", "Contents[].Key",
         "--output", "json",
         "--region", S3_REGION,
@@ -110,7 +120,7 @@ def _s3_list_keys():
         keys = json.loads(result.stdout or "null")
         if not keys:
             return set()
-        # Strip the bucket prefix so keys are relative (e.g. "by-camera/...")
+        # Strip the bucket prefix so keys are relative (e.g. "by-id/...")
         stripped = set()
         for k in keys:
             if prefix and k.startswith(prefix):
@@ -120,6 +130,106 @@ def _s3_list_keys():
         return stripped
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
         return set()
+
+
+def _read_index():
+    """Read and return the camera index from _index.json.
+
+    Returns the parsed dict. If the file does not exist or is invalid,
+    returns a default structure with an empty cameras list.
+    """
+    default = {"cameras": []}
+    try:
+        data = json.loads(INDEX_FILE.read_text())
+        if not isinstance(data, dict) or "cameras" not in data:
+            return default
+        return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return default
+
+
+def _write_index(data):
+    """Write the camera index to _index.json.
+
+    Creates the file (and parent directory) if it does not exist.
+    """
+    INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+    INDEX_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _build_cameras():
+    """Build the response payload for GET /api/cameras."""
+    data = _read_index()
+    cameras = data.get("cameras", [])
+    return {
+        "cameras": cameras,
+        "total": len(cameras),
+        "enabled": sum(1 for c in cameras if c.get("enabled", True)),
+    }
+
+
+def _add_camera(camera_id, name=None, enabled=True):
+    """Add a camera to the index. Returns (result, error)."""
+    if not camera_id or not isinstance(camera_id, str):
+        return None, "camera_id is required and must be a string"
+
+    data = _read_index()
+    cameras = data.get("cameras", [])
+
+    # Check for duplicate
+    for cam in cameras:
+        if cam.get("id") == camera_id:
+            return None, f"camera already exists: {camera_id}"
+
+    entry = {"id": camera_id, "enabled": enabled}
+    if name:
+        entry["name"] = name
+
+    cameras.append(entry)
+    data["cameras"] = cameras
+    _write_index(data)
+
+    return entry, None
+
+
+def _remove_camera(camera_id):
+    """Remove a camera from the index. Returns (result, error)."""
+    if not camera_id or not isinstance(camera_id, str):
+        return None, "camera_id is required and must be a string"
+
+    data = _read_index()
+    cameras = data.get("cameras", [])
+
+    original_len = len(cameras)
+    cameras = [c for c in cameras if c.get("id") != camera_id]
+
+    if len(cameras) == original_len:
+        return None, f"camera not found: {camera_id}"
+
+    data["cameras"] = cameras
+    _write_index(data)
+
+    return {"removed": camera_id}, None
+
+
+def _update_camera(camera_id, name=None, enabled=None):
+    """Update a camera in the index. Returns (result, error)."""
+    if not camera_id or not isinstance(camera_id, str):
+        return None, "camera_id is required and must be a string"
+
+    data = _read_index()
+    cameras = data.get("cameras", [])
+
+    for cam in cameras:
+        if cam.get("id") == camera_id:
+            if name is not None:
+                cam["name"] = name
+            if enabled is not None:
+                cam["enabled"] = enabled
+            _write_index(data)
+            return cam, None
+
+    return None, f"camera not found: {camera_id}"
 
 
 def _build_status():
@@ -141,20 +251,21 @@ def _build_status():
             "storage_class": S3_STORAGE_CLASS,
             "delete_local": S3_DELETE_LOCAL,
         },
+        "camera_index": _build_cameras(),
     }
     return status
 
 
 def _build_backups():
     """Build the response payload for GET /api/backups."""
-    by_camera = ARCHIVE_DIR / "by-camera"
+    by_id = ARCHIVE_DIR / "by-id"
     cameras = {}
     total_local = 0
 
     # Walk local archive
-    if by_camera.is_dir():
-        for mp4 in sorted(by_camera.rglob("*.mp4")):
-            rel = mp4.relative_to(by_camera)
+    if by_id.is_dir():
+        for mp4 in sorted(by_id.rglob("*.mp4")):
+            rel = mp4.relative_to(by_id)
             parts = rel.parts  # e.g. ("63a1f2bc...", "2026-02-19", "file.mp4")
             cam = parts[0]
 
@@ -183,7 +294,7 @@ def _build_backups():
         # Mark local files that also exist in S3
         for cam, recordings in cameras.items():
             for rec in recordings:
-                s3_key = f"by-camera/{rec['path']}"
+                s3_key = f"by-id/{rec['path']}"
                 if s3_key in s3_keys:
                     rec["s3"] = True
                     total_s3 += 1
@@ -191,9 +302,9 @@ def _build_backups():
 
         # Add S3-only files (local was deleted via S3_DELETE_LOCAL)
         for key in sorted(s3_keys):
-            if not key.startswith("by-camera/"):
+            if not key.startswith("by-id/"):
                 continue
-            rel = key[len("by-camera/"):]
+            rel = key[len("by-id/"):]
             parts = Path(rel).parts
             if len(parts) < 2:
                 continue
@@ -226,6 +337,115 @@ def _build_backups():
         "total_local": total_local,
         "total_s3": total_s3,
     }
+
+
+# Regex for parsing recording filenames produced by backup.sh:
+#   {cam_id}_{YYYY-MM-DD}_{HH-MM-SS}_to_{HH-MM-SS}.mp4
+#   {cam_id}_{YYYY-MM-DD}_{HH-MM-SS}_to_{HH-MM-SS}_{label}.mp4
+_RECORDING_RE = re.compile(
+    r"^(?P<cam>.+)_(?P<date>\d{4}-\d{2}-\d{2})"
+    r"_(?P<start>\d{2}-\d{2}-\d{2})_to_(?P<end>\d{2}-\d{2}-\d{2})"
+    r"(?:_(?P<label>[a-z0-9-]+))?\.mp4$"
+)
+
+
+def _hms_to_seconds(hms):
+    """Convert 'HH-MM-SS' to seconds since midnight."""
+    h, m, s = hms.split("-")
+    return int(h) * 3600 + int(m) * 60 + int(s)
+
+
+def _date_hms_to_epoch_ms(date_str, hms):
+    """Convert 'YYYY-MM-DD' + 'HH-MM-SS' to epoch milliseconds (UTC)."""
+    y, mo, d = date_str.split("-")
+    h, mi, s = hms.split("-")
+    ts = calendar.timegm((int(y), int(mo), int(d), int(h), int(mi), int(s)))
+    return ts * 1000
+
+
+def _parse_recording_filename(filename):
+    """Extract start/end epoch-ms from a recording filename.
+
+    Returns (start_ms, end_ms) or None if the filename doesn't match.
+    """
+    m = _RECORDING_RE.match(filename)
+    if not m:
+        return None
+    date_str = m.group("date")
+    start_hms = m.group("start")
+    end_hms = m.group("end")
+
+    start_ms = _date_hms_to_epoch_ms(date_str, start_hms)
+
+    # Handle recordings that span midnight: end time < start time means next day
+    end_ms = _date_hms_to_epoch_ms(date_str, end_hms)
+    if _hms_to_seconds(end_hms) <= _hms_to_seconds(start_hms):
+        end_ms += 86400 * 1000  # add one day
+
+    return start_ms, end_ms
+
+
+def _build_playback(camera_id, range_start_ms, range_end_ms):
+    """Build the response payload for GET /api/playback.
+
+    Finds all recordings for *camera_id* that overlap [range_start, range_end],
+    sorts them chronologically, and computes seek offsets for the first and last
+    file so a player can cover exactly the requested range.
+    """
+    cam_dir = ARCHIVE_DIR / "by-id" / camera_id
+    if not cam_dir.is_dir():
+        return None, f"camera not found: {camera_id}"
+
+    # Collect all .mp4 files with parsed timestamps
+    segments = []
+    for mp4 in cam_dir.rglob("*.mp4"):
+        parsed = _parse_recording_filename(mp4.name)
+        if not parsed:
+            continue
+        seg_start, seg_end = parsed
+
+        # Keep segments that overlap the requested range
+        if seg_end > range_start_ms and seg_start < range_end_ms:
+            segments.append({
+                "file": mp4.name,
+                "path": str(mp4.relative_to(ARCHIVE_DIR / "by-id")),
+                "recording_start_ms": seg_start,
+                "recording_end_ms": seg_end,
+            })
+
+    if not segments:
+        return None, "no recordings found for the requested range"
+
+    # Sort by recording start time
+    segments.sort(key=lambda s: s["recording_start_ms"])
+
+    # Compute seek offsets
+    first = segments[0]
+    last = segments[-1]
+
+    # How far into the first file the requested range begins
+    start_offset_ms = max(0, range_start_ms - first["recording_start_ms"])
+    # How far into the last file the requested range ends
+    end_offset_ms = min(
+        last["recording_end_ms"] - last["recording_start_ms"],
+        range_end_ms - last["recording_start_ms"],
+    )
+
+    return {
+        "camera_id": camera_id,
+        "range": {
+            "start_ms": range_start_ms,
+            "end_ms": range_end_ms,
+        },
+        "files": segments,
+        "playback": {
+            "start_offset_ms": start_offset_ms,
+            "end_offset_ms": end_offset_ms,
+            "start_offset_seconds": round(start_offset_ms / 1000, 1),
+            "end_offset_seconds": round(end_offset_ms / 1000, 1),
+            "total_files": len(segments),
+        },
+    }, None
 
 
 def _trigger_backup(camera_id=None, start=None, end=None):
@@ -293,23 +513,75 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             return None
 
+    def _parse_query(self):
+        """Parse query string parameters from the request URL."""
+        parsed = urlparse(self.path)
+        return parsed.path, {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
     def do_GET(self):
-        if self.path == "/api/status":
+        path, qs = self._parse_query()
+
+        if path == "/api/status":
             self._send_json(_build_status())
-        elif self.path == "/api/backups":
+        elif path == "/api/backups":
             self._send_json(_build_backups())
-        elif self.path == "/api/health":
+        elif path == "/api/playback":
+            # Validate required parameters
+            camera_id = qs.get("camera_id")
+            start_str = qs.get("start")
+            end_str = qs.get("end")
+
+            if not camera_id or not start_str or not end_str:
+                self._send_json({
+                    "error": "camera_id, start, and end query parameters are required",
+                    "usage": "/api/playback?camera_id=<id>&start=<epoch_ms>&end=<epoch_ms>",
+                }, status=400)
+                return
+
+            try:
+                start_ms = int(start_str)
+                end_ms = int(end_str)
+            except ValueError:
+                self._send_json(
+                    {"error": "start and end must be integers (epoch ms)"},
+                    status=400,
+                )
+                return
+
+            if start_ms >= end_ms:
+                self._send_json(
+                    {"error": "start must be before end"},
+                    status=400,
+                )
+                return
+
+            result, err = _build_playback(camera_id, start_ms, end_ms)
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
+
+        elif path == "/api/cameras":
+            self._send_json(_build_cameras())
+        elif path == "/api/health":
             self._send_json({"ok": True})
         else:
             self._send_json({"error": "not found", "endpoints": [
-                "GET  /api/status",
-                "GET  /api/backups",
-                "POST /api/backup",
-                "GET  /api/health",
+                "GET    /api/status",
+                "GET    /api/backups",
+                "GET    /api/playback?camera_id=<id>&start=<epoch_ms>&end=<epoch_ms>",
+                "POST   /api/backup",
+                "GET    /api/cameras",
+                "POST   /api/cameras",
+                "PUT    /api/cameras",
+                "DELETE /api/cameras",
+                "GET    /api/health",
             ]}, status=404)
 
     def do_POST(self):
-        if self.path == "/api/backup":
+        path, _ = self._parse_query()
+
+        if path == "/api/backup":
             body = self._read_json_body()
             if body is None:
                 self._send_json({"error": "invalid JSON body"}, status=400)
@@ -337,6 +609,106 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": err}, status=409)
             else:
                 self._send_json(result, status=202)
+
+        elif path == "/api/cameras":
+            body = self._read_json_body()
+            if body is None:
+                self._send_json({"error": "invalid JSON body"}, status=400)
+                return
+
+            camera_id = body.get("camera_id") or body.get("id")
+            name = body.get("name")
+            enabled = body.get("enabled", True)
+
+            if not camera_id:
+                self._send_json(
+                    {"error": "camera_id is required"},
+                    status=400,
+                )
+                return
+
+            if not isinstance(enabled, bool):
+                self._send_json(
+                    {"error": "enabled must be a boolean"},
+                    status=400,
+                )
+                return
+
+            result, err = _add_camera(camera_id, name=name, enabled=enabled)
+            if err:
+                self._send_json({"error": err}, status=409)
+            else:
+                self._send_json(result, status=201)
+        else:
+            self._send_json({"error": "not found"}, status=404)
+
+    def do_DELETE(self):
+        path, qs = self._parse_query()
+
+        if path == "/api/cameras":
+            # Accept camera_id from query string or JSON body
+            camera_id = qs.get("camera_id")
+            if not camera_id:
+                body = self._read_json_body()
+                if body is None:
+                    self._send_json({"error": "invalid JSON body"}, status=400)
+                    return
+                camera_id = body.get("camera_id") or body.get("id")
+
+            if not camera_id:
+                self._send_json(
+                    {"error": "camera_id is required (query param or JSON body)"},
+                    status=400,
+                )
+                return
+
+            result, err = _remove_camera(camera_id)
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
+        else:
+            self._send_json({"error": "not found"}, status=404)
+
+    def do_PUT(self):
+        path, _ = self._parse_query()
+
+        if path == "/api/cameras":
+            body = self._read_json_body()
+            if body is None:
+                self._send_json({"error": "invalid JSON body"}, status=400)
+                return
+
+            camera_id = body.get("camera_id") or body.get("id")
+            if not camera_id:
+                self._send_json(
+                    {"error": "camera_id is required"},
+                    status=400,
+                )
+                return
+
+            name = body.get("name")
+            enabled = body.get("enabled")
+
+            if enabled is not None and not isinstance(enabled, bool):
+                self._send_json(
+                    {"error": "enabled must be a boolean"},
+                    status=400,
+                )
+                return
+
+            if name is None and enabled is None:
+                self._send_json(
+                    {"error": "at least one of name or enabled is required"},
+                    status=400,
+                )
+                return
+
+            result, err = _update_camera(camera_id, name=name, enabled=enabled)
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
         else:
             self._send_json({"error": "not found"}, status=404)
 

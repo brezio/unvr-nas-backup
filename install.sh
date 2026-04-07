@@ -76,6 +76,74 @@ echo "  Examples: */15 * * * * (every 15 min), */30 * * * * (every 30 min), 0 * 
 read -rp "  CRON_SCHEDULE [*/15 * * * *]: " cron_schedule
 cron_schedule="${cron_schedule:-*/15 * * * *}"
 
+# ── S3 configuration (optional) ─────────────────────────────────────────────
+echo
+read -rp "Enable Amazon S3 uploads? [y/N] " enable_s3
+s3_enabled="false"
+s3_bucket=""
+s3_prefix=""
+s3_region="us-east-1"
+s3_storage_class="STANDARD"
+s3_endpoint_url=""
+aws_access_key_id=""
+aws_secret_access_key=""
+s3_delete_local="false"
+
+if [[ "$enable_s3" =~ ^[Yy] ]]; then
+    s3_enabled="true"
+    echo
+    echo "Enter the S3 bucket name:"
+    read -rp "  S3_BUCKET: " s3_bucket
+    if [ -z "$s3_bucket" ]; then
+        echo "ERROR: S3_BUCKET is required when S3 is enabled." >&2
+        exit 1
+    fi
+
+    echo
+    echo "Enter an optional key prefix (folder) inside the bucket."
+    echo "  Leave blank for none. No leading or trailing slash."
+    read -rp "  S3_PREFIX []: " s3_prefix
+
+    echo
+    echo "Enter the AWS region for the bucket:"
+    read -rp "  S3_REGION [us-east-1]: " s3_region_input
+    s3_region="${s3_region_input:-us-east-1}"
+
+    echo
+    echo "Enter the S3 storage class:"
+    echo "  Options: STANDARD, STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING,"
+    echo "           GLACIER, DEEP_ARCHIVE, GLACIER_IR"
+    read -rp "  S3_STORAGE_CLASS [STANDARD]: " s3_storage_class_input
+    s3_storage_class="${s3_storage_class_input:-STANDARD}"
+
+    echo
+    echo "Using an S3-compatible service (MinIO, Backblaze B2, Wasabi, etc.)?"
+    echo "  Enter the endpoint URL, or leave blank for AWS S3."
+    read -rp "  S3_ENDPOINT_URL []: " s3_endpoint_url
+
+    echo
+    echo "AWS credentials — you can provide an access key pair here, or skip"
+    echo "and mount ~/.aws into the container instead (see compose.yml)."
+    echo "If running on EC2 with an IAM role, skip this."
+    read -rp "  AWS_ACCESS_KEY_ID []: " aws_access_key_id
+    if [ -n "$aws_access_key_id" ]; then
+        read -rsp "  AWS_SECRET_ACCESS_KEY: " aws_secret_access_key
+        echo
+        if [ -z "$aws_secret_access_key" ]; then
+            echo "ERROR: AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set." >&2
+            exit 1
+        fi
+    fi
+
+    echo
+    echo "Delete local .mp4 files after they are confirmed uploaded to S3?"
+    echo "  WARNING: Once deleted, the only copy lives in S3."
+    read -rp "  S3_DELETE_LOCAL [y/N]: " s3_delete_local_input
+    if [[ "$s3_delete_local_input" =~ ^[Yy] ]]; then
+        s3_delete_local="true"
+    fi
+fi
+
 # Generate .env
 cat > .env <<ENVEOF
 # Required - hostname or IP of your Protect device (CloudKey, UCG, UDM, UNVR, etc.)
@@ -115,9 +183,27 @@ TZ=${tz}
 LOG_LEVEL=info
 ENVEOF
 
+# Append S3 configuration if enabled
+if [ "$s3_enabled" = "true" ]; then
+    cat >> .env <<S3EOF
+
+# ── Amazon S3 upload ─────────────────────────────────────────────────────────
+S3_ENABLED=true
+S3_BUCKET=${s3_bucket}
+S3EOF
+
+    [ -n "$s3_prefix" ] && echo "S3_PREFIX=${s3_prefix}" >> .env
+    echo "S3_REGION=${s3_region}" >> .env
+    echo "S3_STORAGE_CLASS=${s3_storage_class}" >> .env
+    [ -n "$s3_endpoint_url" ] && echo "S3_ENDPOINT_URL=${s3_endpoint_url}" >> .env
+    [ -n "$aws_access_key_id" ] && echo "AWS_ACCESS_KEY_ID=${aws_access_key_id}" >> .env
+    [ -n "$aws_secret_access_key" ] && echo "AWS_SECRET_ACCESS_KEY=${aws_secret_access_key}" >> .env
+    echo "S3_DELETE_LOCAL=${s3_delete_local}" >> .env
+fi
+
 echo
 echo "Generated .env:"
-grep -E '^[A-Z]' .env
+grep -E '^[A-Z]' .env | sed 's/^\(AWS_SECRET_ACCESS_KEY=\).*/\1********/'
 echo
 
 # Create archive directory
@@ -199,6 +285,7 @@ docker compose up -d
 echo
 echo "=== Installation complete ==="
 echo "  Logs:   docker compose logs -f"
+echo "  API:    http://localhost:7550/api/status"
 if [ -f ./scripts/status.sh ]; then
     echo "  Status: ./scripts/status.sh"
 fi
