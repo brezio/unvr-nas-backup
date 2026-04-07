@@ -6,10 +6,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         procps \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install unifi-protect-remux v4.1.4 — pick the right binary for the build platform
+# Install AWS CLI v2 — pick the right binary for the build platform
 ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+        amd64) AWS_ARCH="x86_64" ;; \
+        arm64) AWS_ARCH="aarch64" ;; \
+        *)     echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws
+
+# Install unifi-protect-remux v4.1.4 — pick the right binary for the build platform
 RUN case "${TARGETARCH}" in \
         amd64) REMUX_ARCH="x86_64" ;; \
         arm64) REMUX_ARCH="aarch64" ;; \

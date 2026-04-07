@@ -9,6 +9,8 @@ services:
       - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh-mount:ro
       - staging:/staging
       - ${ARCHIVE_PATH:?ARCHIVE_PATH is required}:/archive
+      # Uncomment to use AWS credentials from host (alternative to env vars)
+      # - ${AWS_CONFIG_PATH:-~/.aws}:/root/.aws:ro
     tmpfs:
       - /tmp:size=2G
     healthcheck:

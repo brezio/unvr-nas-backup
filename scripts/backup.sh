@@ -18,6 +18,14 @@ BACKUP_CHANNELS="${BACKUP_CHANNELS:-0}"
 SSH_DIR="${SSH_DIR:-/tmp/.ssh-copy}"
 RETENTION_DAYS="${RETENTION_DAYS:-}"
 RETENTION_PERCENT="${RETENTION_PERCENT:-}"
+S3_ENABLED="${S3_ENABLED:-false}"
+S3_BUCKET="${S3_BUCKET:-}"
+S3_PREFIX="${S3_PREFIX:-}"
+S3_REGION="${S3_REGION:-us-east-1}"
+S3_STORAGE_CLASS="${S3_STORAGE_CLASS:-STANDARD}"
+S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-}"
+S3_DELETE_LOCAL="${S3_DELETE_LOCAL:-false}"
+BACKUP_USE_CAMERA_ID="${BACKUP_USE_CAMERA_ID:-false}"
 
 STAGING_DIR="/staging"
 REMUX_DIR="${STAGING_DIR}/remuxed"
@@ -133,6 +141,52 @@ run_retention_prune() {
     fi
 }
 
+# ── S3 helpers ──────────────────────────────────────────────────────────────
+s3_build_args() {
+    local args="--region ${S3_REGION}"
+    [ -n "$S3_ENDPOINT_URL" ] && args="${args} --endpoint-url ${S3_ENDPOINT_URL}"
+    echo "$args"
+}
+
+s3_upload_file() {
+    local local_file="$1" s3_key="$2"
+    local bucket_prefix="${S3_PREFIX:+${S3_PREFIX}/}"
+    local s3_uri="s3://${S3_BUCKET}/${bucket_prefix}${s3_key}"
+    # shellcheck disable=SC2086
+    aws s3 cp "$local_file" "$s3_uri" \
+        --storage-class "$S3_STORAGE_CLASS" \
+        $(s3_build_args) \
+        --only-show-errors
+}
+
+s3_verify_file() {
+    local s3_key="$1" expected_size="$2"
+    local bucket_prefix="${S3_PREFIX:+${S3_PREFIX}/}"
+    local s3_uri="s3://${S3_BUCKET}/${bucket_prefix}${s3_key}"
+    local remote_size
+    # shellcheck disable=SC2086
+    remote_size=$(aws s3api head-object \
+        --bucket "$S3_BUCKET" \
+        --key "${bucket_prefix}${s3_key}" \
+        $(s3_build_args) \
+        --query ContentLength --output text 2>/dev/null) || return 1
+    [ "$remote_size" = "$expected_size" ]
+}
+
+delete_local_file() {
+    local file_path="$1"
+    [ -f "$file_path" ] || return 0
+    rm -f "$file_path"
+    debug "Deleted local file: ${file_path}"
+    # Clean up empty parent directories up to the archive root
+    local parent
+    parent=$(dirname "$file_path")
+    while [ "$parent" != "$ARCHIVE_DIR" ] && [ "$parent" != "/" ]; do
+        rmdir "$parent" 2>/dev/null || break
+        parent=$(dirname "$parent")
+    done
+}
+
 # ── Validate BACKUP_CHANNELS → SQL IN clause ────────────────────────────────
 CHANNEL_LIST=""
 IFS=',' read -ra _channels <<< "$BACKUP_CHANNELS"
@@ -203,7 +257,7 @@ LOOKBACK_MS=$((BACKUP_HOURS * 3600 * 1000))
 
 CSV=$(remote "psql -p ${PROTECT_DB_PORT} -U postgres -d ${PROTECT_DB_NAME} -At" <<EOSQL
 COPY (
-    SELECT c.name, rf.file, rf.folder, rf.start, rf."end", rf.channel
+    SELECT c.name, rf.file, rf.folder, rf.start, rf."end", rf.channel, c.id
     FROM cameras c
     JOIN "recordingFiles" rf ON c.id = rf."cameraId"
     WHERE rf.type = 'rotating'
@@ -234,13 +288,20 @@ copied=0
 skipped=0
 batch_count=0
 
-while IFS=',' read -r cam_name file folder start_ts end_ts channel; do
+while IFS=',' read -r cam_name file folder start_ts end_ts channel cam_id; do
+    # Choose camera label based on BACKUP_USE_CAMERA_ID setting
+    if [ "$BACKUP_USE_CAMERA_ID" = "true" ]; then
+        cam_label="$cam_id"
+    else
+        cam_label="$cam_name"
+    fi
+
     # Build remote path
     ubv_path="${folder}/${file}"
     local_ubv="${STAGING_DIR}/ubv/${file}"
 
     # Build final archive path to check for duplicates
-    build_archive_path "$cam_name" "$start_ts" "$end_ts" "$channel"
+    build_archive_path "$cam_label" "$start_ts" "$end_ts" "$channel"
 
     # Skip if already archived
     if [ -f "$final_path" ]; then
@@ -275,6 +336,8 @@ while IFS=',' read -r cam_name file folder start_ts end_ts channel; do
     # Write metadata sidecar (quote values for safe sourcing)
     cat > "${STAGING_DIR}/${file}.meta" <<METAEOF
 cam_name='${cam_name//\'/\'\\\'\'}'
+cam_id='${cam_id//\'/\'\\\'\'}'
+cam_label='${cam_label//\'/\'\\\'\'}'
 start_ts='${start_ts}'
 end_ts='${end_ts}'
 channel='${channel}'
@@ -349,8 +412,8 @@ for meta_file in "${STAGING_DIR}/"*.meta; do
         continue
     fi
 
-    # Build archive path
-    build_archive_path "$cam_name" "$start_ts" "$end_ts" "$channel"
+    # Build archive path (uses cam_label: either name or ID based on BACKUP_USE_CAMERA_ID)
+    build_archive_path "$cam_label" "$start_ts" "$end_ts" "$channel"
 
     mkdir -p "$archive_subdir"
     mv "$mp4_file" "${archive_subdir}/${final_name}"
@@ -376,11 +439,79 @@ done
 
 log "Archived ${archived} file(s) to ${ARCHIVE_DIR}"
 
+# ── Step 5: Upload to S3 (if enabled) ───────────────────────────────────────
+s3_uploaded=0
+s3_deleted=0
+
+if [ "$S3_ENABLED" = "true" ] && [ "$archived" -gt 0 ]; then
+    log "Uploading ${archived} file(s) to S3 (bucket=${S3_BUCKET}, class=${S3_STORAGE_CLASS})..."
+
+    for meta_file in "${STAGING_DIR}/"*.meta; do
+        [ -f "$meta_file" ] || continue
+
+        # shellcheck disable=SC1090
+        . "$meta_file"
+
+        build_archive_path "$cam_label" "$start_ts" "$end_ts" "$channel"
+
+        # Only upload files that were just archived (exist in the archive)
+        [ -f "$final_path" ] || continue
+
+        # S3 key mirrors the by-camera/ structure
+        s3_key="by-camera/${final_path#"${ARCHIVE_DIR}/by-camera/"}"
+        local_size=$(stat -c%s "$final_path")
+
+        debug "Uploading to S3: ${s3_key} (${local_size} bytes)"
+        if s3_upload_file "$final_path" "$s3_key"; then
+            # Verify the upload by checking file size in S3
+            if s3_verify_file "$s3_key" "$local_size"; then
+                debug "S3 upload verified: ${s3_key}"
+                s3_uploaded=$((s3_uploaded + 1))
+
+                # Delete local file if configured
+                if [ "$S3_DELETE_LOCAL" = "true" ]; then
+                    delete_local_file "$final_path"
+                    s3_deleted=$((s3_deleted + 1))
+
+                    # Clean up the by-date symlink if the target directory is now empty
+                    label=$(channel_label "$channel")
+                    if [ -z "$label" ]; then
+                        bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}"
+                    else
+                        bydate_link="${ARCHIVE_DIR}/by-date/${date_str}/${safe_cam}-${label}"
+                    fi
+                    if [ -L "$bydate_link" ]; then
+                        link_target=$(readlink -f "$bydate_link")
+                        if [ -d "$link_target" ] && [ -z "$(ls -A "$link_target" 2>/dev/null)" ]; then
+                            rm -f "$bydate_link"
+                            rmdir "$link_target" 2>/dev/null || true
+                            # Clean empty by-date parent
+                            bydate_parent=$(dirname "$bydate_link")
+                            rmdir "$bydate_parent" 2>/dev/null || true
+                            debug "Cleaned up empty symlink: ${bydate_link}"
+                        fi
+                    fi
+                fi
+            else
+                warn "S3 upload verification failed for ${s3_key} — keeping local copy"
+            fi
+        else
+            warn "S3 upload failed for ${s3_key} — keeping local copy"
+        fi
+    done
+
+    log "S3: uploaded=${s3_uploaded}, local files deleted=${s3_deleted}"
+fi
+
 # ── Retention pruning ───────────────────────────────────────────────────────
 if [ -n "${RETENTION_DAYS}" ] || [ -n "${RETENTION_PERCENT}" ]; then
     run_retention_prune
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived}"
+if [ "$S3_ENABLED" = "true" ]; then
+    log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived} s3_uploaded=${s3_uploaded} s3_deleted=${s3_deleted}"
+else
+    log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived}"
+fi
 date +%s > /tmp/backup-last-success

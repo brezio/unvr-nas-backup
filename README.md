@@ -22,11 +22,14 @@ NAS (Docker)                        Protect Device (CloudKey, UCG, UDM, UNVR, et
 │                        │          │  .ubv video files       │
 │  1. Query DB for files │          └─────────────────────────┘
 │  2. SCP .ubv to staging│
-│  3. Remux → .mp4       │
-│  4. Rename with camera │
-│     name + timestamps  │
-│  5. Archive to         │
-│     /CamName/date/     │
+│  3. Remux → .mp4       │          Amazon S3 (optional)
+│  4. Rename with camera │          ┌─────────────────────────┐
+│     name + timestamps  │── S3 --> │  by-camera/CamName/     │
+│  5. Archive to         │          │    date/*.mp4           │
+│     /CamName/date/     │          └─────────────────────────┘
+│  6. Upload to S3       │
+│  7. (optional) Delete  │
+│     local files        │
 └────────────────────────┘
 ```
 
@@ -136,6 +139,7 @@ Your archive directory is **not** deleted automatically. Remove it manually if y
 | `PROTECT_DB_NAME` | `unifi-protect` | PostgreSQL database name |
 | `BACKUP_HOURS` | `1` | How many hours back to look for completed recordings (based on end time). Set this to at least 2x your cron interval so recordings that finish between runs are not missed. |
 | `BACKUP_CHANNELS` | `0` | Which recording channels to back up (comma-separated). `0` = main high-res stream, `2` = low-quality sub-stream. Most users only need `0`. |
+| `BACKUP_USE_CAMERA_ID` | `false` | Use camera database IDs instead of names for archive directories and filenames. Useful when camera names contain special characters, are duplicated, or are frequently renamed. |
 | `BATCH_SIZE` | `5` | Number of files to SCP before pausing |
 | `BATCH_DELAY` | `30` | Seconds to pause between SCP batches |
 | `ARCHIVE_PATH` | *(required)* | Host path for the archive volume mount |
@@ -150,6 +154,58 @@ Your archive directory is **not** deleted automatically. Remove it manually if y
 > **Disk usage**: Continuous recording generates roughly 10-20 GB per camera per day depending on resolution and scene activity. Plan your archive storage accordingly.
 >
 > **Retention**: Both retention settings are disabled by default (the archive grows indefinitely). When both are set, age-based pruning (`RETENTION_DAYS`) runs first, then disk-based pruning (`RETENTION_PERCENT`) kicks in if usage is still over the threshold. Pruning always deletes the oldest dates first.
+
+### Amazon S3 upload
+
+After each backup run, archived `.mp4` files can be automatically uploaded to an S3 bucket. S3 upload is disabled by default.
+
+| Variable | Default | Description |
+|---|---|---|
+| `S3_ENABLED` | `false` | Set to `true` to enable S3 uploads |
+| `S3_BUCKET` | *(required when enabled)* | S3 bucket name |
+| `S3_PREFIX` | *(none)* | Optional key prefix (folder) inside the bucket. No leading or trailing slash. |
+| `S3_REGION` | `us-east-1` | AWS region for the bucket |
+| `S3_STORAGE_CLASS` | `STANDARD` | S3 storage class. Options: `STANDARD`, `STANDARD_IA`, `ONEZONE_IA`, `INTELLIGENT_TIERING`, `GLACIER`, `DEEP_ARCHIVE`, `GLACIER_IR` |
+| `S3_ENDPOINT_URL` | *(none)* | Custom endpoint URL for S3-compatible services (MinIO, Backblaze B2, Wasabi, etc.) |
+| `AWS_ACCESS_KEY_ID` | *(none)* | AWS access key (or mount `~/.aws` — see below) |
+| `AWS_SECRET_ACCESS_KEY` | *(none)* | AWS secret key |
+| `S3_DELETE_LOCAL` | `false` | Delete local `.mp4` files after they are confirmed uploaded to S3. See warning below. |
+
+**Providing AWS credentials** — you have two options:
+
+1. **Environment variables** (simpler): Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in your `.env` file.
+2. **AWS config mount** (supports profiles, SSO, etc.): Uncomment the `~/.aws` volume mount in `compose.yml`. The container will read `~/.aws/credentials` and `~/.aws/config` from the host.
+
+If running on an EC2 instance with an IAM instance profile, neither is needed — the AWS CLI picks up the role automatically.
+
+**S3 file structure** — files are uploaded under the same `by-camera/` structure used locally:
+
+```
+s3://my-protect-backups/
+└── unifi-protect/                     ← S3_PREFIX (optional)
+    └── by-camera/
+        ├── Front-Door/
+        │   └── 2026-02-19/
+        │       ├── Front-Door_2026-02-19_08-00-00_to_08-05-00.mp4
+        │       └── ...
+        └── Backyard/
+            └── ...
+```
+
+**Upload verification** — each file is verified after upload by comparing the file size reported by S3 against the local file. If verification fails, the local file is kept and a warning is logged.
+
+> **Warning — `S3_DELETE_LOCAL`**: When set to `true`, local `.mp4` files are deleted immediately after their S3 upload is verified. Once deleted, the **only** copy of those recordings lives in S3. Make sure your S3 bucket has versioning or cross-region replication configured if data durability is critical. Empty directories and stale by-date symlinks are cleaned up automatically.
+
+**S3-compatible storage** — any service that implements the S3 API can be used by setting `S3_ENDPOINT_URL`. Tested configurations include MinIO and Backblaze B2. Example for Backblaze B2:
+
+```bash
+S3_ENABLED=true
+S3_BUCKET=my-b2-bucket
+S3_ENDPOINT_URL=https://s3.us-west-000.backblazeb2.com
+S3_REGION=us-west-000
+AWS_ACCESS_KEY_ID=<your-b2-key-id>
+AWS_SECRET_ACCESS_KEY=<your-b2-application-key>
+```
 
 ## Compatibility
 
@@ -193,6 +249,8 @@ Files are stored canonically by camera, with date-based symlinks for browsing by
 ```
 
 > **Note:** The `by-date` directory uses symlinks, which may not be visible when browsing via SMB/Windows shares. The `by-camera` directory always works directly.
+
+When `BACKUP_USE_CAMERA_ID=true`, camera names are replaced by Protect database IDs (e.g., `63a1f2bcde0400038f000123/2026-02-19/63a1f2bcde0400038f000123_2026-02-19_08-00-00_to_08-05-00.mp4`). This avoids issues with special characters, duplicate names, or cameras being renamed after recordings are archived.
 
 ## Troubleshooting
 

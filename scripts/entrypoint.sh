@@ -67,11 +67,28 @@ fi
 
 export SSH_OPTS
 
+# ── Validate S3 settings (if enabled) ───────────────────────────────────────
+S3_ENABLED="${S3_ENABLED:-false}"
+S3_DELETE_LOCAL="${S3_DELETE_LOCAL:-false}"
+S3_REGION="${S3_REGION:-us-east-1}"
+S3_STORAGE_CLASS="${S3_STORAGE_CLASS:-STANDARD}"
+
+if [ "$S3_ENABLED" = "true" ]; then
+    [ -z "${S3_BUCKET:-}" ] && die "S3_ENABLED=true but S3_BUCKET is not set"
+    # Verify AWS CLI is available and credentials work
+    if ! aws sts get-caller-identity --region "$S3_REGION" >/dev/null 2>&1; then
+        log "WARN: AWS credential check failed — S3 uploads may fail at runtime"
+        log "WARN: Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or mount ~/.aws"
+    else
+        log "AWS credentials verified (S3 bucket: ${S3_BUCKET})"
+    fi
+fi
+
 # ── Export env for cron ──────────────────────────────────────────────────────
 # Cron jobs don't inherit the container's environment, so we dump it to a file
 # that backup.sh will source.
 # Quote values so sourcing is safe (handles spaces in SSH_OPTS, paths, etc.)
-env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=|RETENTION_)' \
+env | grep -E '^(PROTECT_|BACKUP_|BATCH_|ARCHIVE_|SSH_|CRON_|RUN_ON_START|LOG_LEVEL|TZ|PATH=|RETENTION_|S3_|AWS_)' \
     | while IFS='=' read -r key value; do
         printf "%s='%s'\n" "$key" "${value//\'/\'\\\'\'}"
     done > /etc/environment
