@@ -142,6 +142,13 @@ def _read_cached_timezone():
 class TriggerHandler(BaseHTTPRequestHandler):
     """Handle internal requests from the API service."""
 
+    def handle(self):
+        """Wrap request handling to absorb broken-pipe / reset errors."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode()
         self.send_response(status)

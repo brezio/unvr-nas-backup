@@ -1129,6 +1129,13 @@ def _trigger_backup(camera_id=None, start=None, end=None, callback_url=None):
 class Handler(BaseHTTPRequestHandler):
     """Minimal JSON API handler."""
 
+    def handle(self):
+        """Wrap request handling to absorb broken-pipe / reset errors."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _send_json(self, data, status=200):
         body = json.dumps(data, indent=2).encode()
         self.send_response(status)
