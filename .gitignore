@@ -16,7 +16,6 @@ __pycache__/
 *.pyc
 
 # Claude Code
-CLAUDE.md
 .claude/
 
 # OS / IDE

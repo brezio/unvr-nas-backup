@@ -11,10 +11,11 @@ PROTECT_VIDEO_PATH="${PROTECT_VIDEO_PATH:-/srv/unifi-protect/video}"
 PROTECT_DB_PORT="${PROTECT_DB_PORT:-5433}"
 PROTECT_DB_NAME="${PROTECT_DB_NAME:-unifi-protect}"
 BACKUP_HOURS="${BACKUP_HOURS:-1}"
-BATCH_SIZE="${BATCH_SIZE:-5}"
-BATCH_DELAY="${BATCH_DELAY:-30}"
+BATCH_SIZE="${BATCH_SIZE:-20}"
+BATCH_DELAY="${BATCH_DELAY:-5}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 BACKUP_CHANNELS="${BACKUP_CHANNELS:-0}"
+REMUX_JOBS="${REMUX_JOBS:-4}"
 SSH_DIR="${SSH_DIR:-/tmp/.ssh-copy}"
 RETENTION_DAYS="${RETENTION_DAYS:-}"
 RETENTION_PERCENT="${RETENTION_PERCENT:-}"
@@ -409,25 +410,35 @@ done < <(echo "$CSV" | tail -n +2)
 
 log "Copied ${copied} file(s), skipped ${skipped} already-archived"
 
-# ── Step 3: Remux .ubv → .mp4 ───────────────────────────────────────────────
-log "Remuxing .ubv files to .mp4..."
-remuxed=0
-failed=0
+# ── Step 3: Remux .ubv → .mp4 (parallel) ────────────────────────────────────
+log "Remuxing .ubv files to .mp4 (jobs=${REMUX_JOBS})..."
+REMUX_OK_COUNT="${STAGING_DIR}/.remux-ok-count"
+REMUX_FAIL_COUNT="${STAGING_DIR}/.remux-fail-count"
+echo 0 > "$REMUX_OK_COUNT"
+echo 0 > "$REMUX_FAIL_COUNT"
 
-for ubv_file in "${STAGING_DIR}/ubv/"*.ubv; do
-    [ -f "$ubv_file" ] || continue
-
+remux_one() {
+    local ubv_file="$1"
+    local basename_ubv
     basename_ubv=$(basename "$ubv_file")
-    debug "Remuxing: ${basename_ubv}"
 
     if /usr/local/bin/remux --output-folder="$REMUX_DIR" --fast-start true "$ubv_file" 2>&1; then
-        remuxed=$((remuxed + 1))
+        flock "$REMUX_OK_COUNT" bash -c 'echo $(( $(cat "'"$REMUX_OK_COUNT"'") + 1 )) > "'"$REMUX_OK_COUNT"'"'
     else
-        warn "Remux failed for ${basename_ubv}"
         echo "$basename_ubv" >> "$FAILURES_FILE"
-        failed=$((failed + 1))
+        flock "$REMUX_FAIL_COUNT" bash -c 'echo $(( $(cat "'"$REMUX_FAIL_COUNT"'") + 1 )) > "'"$REMUX_FAIL_COUNT"'"'
     fi
-done
+}
+export -f remux_one
+export REMUX_DIR FAILURES_FILE REMUX_OK_COUNT REMUX_FAIL_COUNT
+
+# Use find + xargs for portable parallel execution
+find "${STAGING_DIR}/ubv/" -maxdepth 1 -name '*.ubv' -print0 2>/dev/null \
+    | xargs -0 -r -P "$REMUX_JOBS" -I{} bash -c 'remux_one "$@"' _ {}
+
+remuxed=$(cat "$REMUX_OK_COUNT")
+failed=$(cat "$REMUX_FAIL_COUNT")
+rm -f "$REMUX_OK_COUNT" "$REMUX_FAIL_COUNT"
 
 log "Remuxed ${remuxed} file(s), ${failed} failed"
 
