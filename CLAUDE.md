@@ -4,17 +4,26 @@ Dockerized backup system that pulls continuous surveillance video from a UniFi P
 
 ## Architecture
 
-The container runs three processes: a **cron scheduler** (PID 1) that triggers `backup.sh` on a configurable interval, a **Python stdlib HTTP API** (`api.py`) that starts in the background before any backup work, and the **backup script** itself which handles SSH/SCP from the Protect device, remuxing, archiving, and S3 sync.
+The system runs as three Docker services defined in `compose.yml`:
+
+- **exporter** — Runs cron (PID 1) which triggers `backup.sh` on a configurable interval. Handles SSH/SCP from the Protect device, `.ubv` → `.mp4` remuxing, archiving to `/archive`, and optional S3 sync. Also runs a lightweight internal trigger server (`trigger.py`) so the API can request on-demand backups.
+- **api** — Python stdlib HTTP API (`api.py`) that serves all client-facing endpoints. Manages the backup queue, camera index, playback lookups, and status. Triggers backups by calling the exporter's internal HTTP endpoint.
+- **nginx** — Reverse proxy that exposes the API on port 80.
+
+The exporter and API share two volumes: `/archive` (the recording archive, read-write for exporter, read-only for API) and `/shared` (lock file and last-success timestamp). Both containers read the same `.env` file.
 
 Camera selection is controlled by `/archive/_index.json`. When its `cameras` array is empty or the file is missing, all cameras are backed up. When populated, only cameras with `"enabled": true` are included in scheduled runs. API-triggered backups with an explicit `camera_id` bypass the index.
 
 ## Key files
 
-- `scripts/backup.sh` — main backup pipeline (query DB → SCP `.ubv` → remux → archive → S3 sync)
-- `scripts/api.py` — stdlib-only HTTP API server (no pip dependencies), all endpoints below
-- `scripts/entrypoint.sh` — container init (SSH setup, index creation, API start, optional first backup, cron)
-- `Dockerfile` — Debian bookworm-slim with python3, AWS CLI v2, unifi-protect-remux
-- `compose.yml` — Docker Compose service definition
+- `exporter/backup.sh` — main backup pipeline (query DB → SCP `.ubv` → remux → archive → S3 sync)
+- `exporter/entrypoint.sh` — exporter container init (SSH setup, index creation, trigger server, optional first backup, cron)
+- `exporter/trigger.py` — internal HTTP server that accepts backup trigger requests from the API
+- `exporter/Dockerfile` — Debian bookworm-slim with python3, AWS CLI v2, unifi-protect-remux, cron
+- `api/api.py` — stdlib-only HTTP API server (no pip dependencies), all endpoints below
+- `api/Dockerfile` — Debian bookworm-slim with python3, AWS CLI v2 (for S3 inventory queries)
+- `compose.yml` — Docker Compose multi-service definition
+- `nginx.conf` — nginx reverse proxy configuration
 - `install.sh` — interactive installer that generates `.env` and starts the stack
 
 ## Archive structure
@@ -323,29 +332,31 @@ Response shape:
 
 ## Environment variables
 
-The API reads these at startup from the container environment (set via `.env` / compose):
+Both containers read from the shared `.env` file. The API also receives `EXPORTER_URL` via the compose `environment` key.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `PROTECT_HOST` | *(required)* | backup.sh, api.py (sync) |
-| `PROTECT_SSH_USER` | `root` | backup.sh, api.py (sync) |
-| `PROTECT_DB_PORT` | `5433` | backup.sh, api.py (sync) |
-| `PROTECT_DB_NAME` | `unifi-protect` | backup.sh, api.py (sync) |
-| `SSH_OPTS` | *(set by entrypoint)* | backup.sh, api.py (sync) |
-| `API_PORT` | `7550` | api.py |
-| `API_ENABLED` | `true` | entrypoint.sh |
-| `BACKUP_HOURS` | `1` | backup.sh |
-| `BATCH_SIZE` | `20` | backup.sh |
-| `BATCH_DELAY` | `5` | backup.sh |
-| `REMUX_JOBS` | `4` | backup.sh |
-| `CRON_SCHEDULE` | `*/15 * * * *` | entrypoint.sh |
-| `S3_ENABLED` | `false` | backup.sh, api.py |
-| `S3_BUCKET` | *(required when S3 enabled)* | backup.sh, api.py |
-| `S3_PREFIX` | *(none)* | backup.sh, api.py |
-| `S3_REGION` | `us-east-1` | backup.sh, api.py |
-| `S3_STORAGE_CLASS` | `STANDARD` | backup.sh |
-| `S3_ENDPOINT_URL` | *(none)* | backup.sh, api.py |
-| `S3_DELETE_LOCAL` | `false` | backup.sh, api.py |
+| `PROTECT_HOST` | *(required)* | exporter, api (sync) |
+| `PROTECT_SSH_USER` | `root` | exporter, api (sync) |
+| `PROTECT_DB_PORT` | `5433` | exporter, api (sync) |
+| `PROTECT_DB_NAME` | `unifi-protect` | exporter, api (sync) |
+| `SSH_OPTS` | *(set by entrypoint)* | exporter, api (sync) |
+| `API_PORT` | `7550` | api |
+| `EXPORTER_PORT` | `8550` | exporter (trigger server) |
+| `EXPORTER_URL` | `http://exporter:8550` | api (set via compose) |
+| `NGINX_PORT` | `80` | nginx (host port) |
+| `BACKUP_HOURS` | `1` | exporter |
+| `BATCH_SIZE` | `20` | exporter |
+| `BATCH_DELAY` | `5` | exporter |
+| `REMUX_JOBS` | `4` | exporter |
+| `CRON_SCHEDULE` | `*/15 * * * *` | exporter |
+| `S3_ENABLED` | `false` | exporter, api |
+| `S3_BUCKET` | *(required when S3 enabled)* | exporter, api |
+| `S3_PREFIX` | *(none)* | exporter, api |
+| `S3_REGION` | `us-east-1` | exporter, api |
+| `S3_STORAGE_CLASS` | `STANDARD` | exporter |
+| `S3_ENDPOINT_URL` | *(none)* | exporter, api |
+| `S3_DELETE_LOCAL` | `false` | exporter, api |
 
 ## Conventions
 

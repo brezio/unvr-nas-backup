@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Lightweight status API for unvr-nas-backup.
+"""API service for unvr-nas-backup.
 
-Runs inside the container alongside cron. Uses only the Python standard library
-so no pip dependencies are required. Reads the same environment variables and
-file-system state that backup.sh uses.
+Runs as a standalone container. Uses only the Python standard library so no pip
+dependencies are required. Reads the archive and shared volumes, and triggers
+backups via the exporter service's internal HTTP endpoint.
 
 Endpoints:
     GET    /api/status              — current backup health and configuration
@@ -36,8 +36,11 @@ from urllib.request import Request, urlopen
 # ── Configuration ───────────────────────────────────────────────────────────
 
 ARCHIVE_DIR = Path("/archive")
-LOCKFILE = Path("/tmp/backup.lock")
-LAST_SUCCESS_FILE = Path("/tmp/backup-last-success")
+LOCKFILE = Path("/shared/backup.lock")
+LAST_SUCCESS_FILE = Path("/shared/backup-last-success")
+
+# Internal exporter service URL — the exporter exposes a trigger endpoint
+EXPORTER_URL = os.environ.get("EXPORTER_URL", "http://exporter:8550")
 
 API_PORT = int(os.environ.get("API_PORT", "7550"))
 
@@ -202,28 +205,29 @@ def _process_queue():
             req["status"] = "running"
             req["started_at"] = time.time()
 
-        # Run the backup synchronously (blocks this thread, not the API)
+        # Trigger the backup via the exporter's internal HTTP endpoint
         camera_id = req["_camera_id"]
         start = req["_start"]
         end = req["_end"]
 
-        env = os.environ.copy()
+        trigger_body = {}
         if camera_id:
-            env["BACKUP_CAMERA_ID"] = str(camera_id)
+            trigger_body["camera_id"] = str(camera_id)
         if start is not None:
-            env["BACKUP_START"] = str(int(start))
+            trigger_body["start"] = int(start)
         if end is not None:
-            env["BACKUP_END"] = str(int(end))
+            trigger_body["end"] = int(end)
 
         try:
-            result = subprocess.run(
-                ["/usr/local/bin/backup.sh"],
-                env=env,
-                stdout=open("/proc/1/fd/1", "w"),
-                stderr=open("/proc/1/fd/2", "w"),
+            data = json.dumps(trigger_body).encode()
+            http_req = Request(
+                f"{EXPORTER_URL}/trigger",
+                data=data, method="POST",
             )
-            success = result.returncode == 0
-        except OSError:
+            http_req.add_header("Content-Type", "application/json")
+            resp = urlopen(http_req, timeout=600)
+            success = resp.status == 200
+        except Exception:
             success = False
 
         with _queue_lock:
@@ -1129,25 +1133,26 @@ def _trigger_backup(camera_id=None, start=None, end=None, callback_url=None):
     with _queue_lock:
         _requests[request_id] = req
 
-    # Build environment: inherit current env, add overrides
-    env = os.environ.copy()
+    # Build the trigger request for the exporter
+    trigger_body = {}
     if camera_id:
-        env["BACKUP_CAMERA_ID"] = str(camera_id)
+        trigger_body["camera_id"] = str(camera_id)
     if start is not None:
-        env["BACKUP_START"] = str(int(start))
+        trigger_body["start"] = int(start)
     if end is not None:
-        env["BACKUP_END"] = str(int(end))
+        trigger_body["end"] = int(end)
 
     def _run_and_track():
         try:
-            result = subprocess.run(
-                ["/usr/local/bin/backup.sh"],
-                env=env,
-                stdout=open("/proc/1/fd/1", "w"),
-                stderr=open("/proc/1/fd/2", "w"),
+            data = json.dumps(trigger_body).encode()
+            http_req = Request(
+                f"{EXPORTER_URL}/trigger",
+                data=data, method="POST",
             )
-            success = result.returncode == 0
-        except OSError:
+            http_req.add_header("Content-Type", "application/json")
+            resp = urlopen(http_req, timeout=600)
+            success = resp.status == 200
+        except Exception:
             success = False
 
         with _queue_lock:

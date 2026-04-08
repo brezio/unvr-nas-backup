@@ -16,7 +16,7 @@ echo
 
 # Container status
 echo "--- Container ---"
-if docker compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null | grep -q unvr-nas-backup; then
+if docker compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null | grep -q unvr-nas-backup-; then
     docker compose ps --format 'table {{.Name}}\t{{.Status}}\t{{.Health}}'
 else
     echo "Container is not running."
@@ -25,7 +25,7 @@ echo
 
 # Recent logs
 echo "--- Last backup ---"
-docker compose logs --tail 5 2>/dev/null | grep -E '\[(backup|entrypoint)\]' | tail -5 || echo "No logs available."
+docker compose logs exporter --tail 5 2>/dev/null | grep -E '\[(backup|entrypoint)\]' | tail -5 || echo "No logs available."
 echo
 
 # Cron schedule
@@ -76,5 +76,5 @@ echo "--- Disk ---"
 if [ -d "$archive" ]; then
     df -h "$archive" | tail -1 | awk '{printf "Archive disk: %s used / %s total (%s free, %s used)\n", $3, $2, $4, $5}'
 fi
-staging_size=$(docker compose exec unvr-nas-backup du -sh /staging 2>/dev/null | cut -f1 || echo "—")
+staging_size=$(docker compose exec exporter du -sh /staging 2>/dev/null | cut -f1 || echo "—")
 echo "Staging:     ${staging_size}"

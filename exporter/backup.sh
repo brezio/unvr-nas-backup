@@ -31,7 +31,7 @@ STAGING_DIR="/staging"
 REMUX_DIR="${STAGING_DIR}/remuxed"
 ARCHIVE_DIR="/archive"
 INDEX_FILE="${ARCHIVE_DIR}/_index.json"
-LOCKFILE="/tmp/backup.lock"
+LOCKFILE="/shared/backup.lock"
 FAILURES_FILE="${STAGING_DIR}/.remux-failures"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -577,4 +577,4 @@ if [ "$S3_ENABLED" = "true" ]; then
 else
     log "Done — queried=${TOTAL} copied=${copied} remuxed=${remuxed} archived=${archived}"
 fi
-date +%s > /tmp/backup-last-success
+date +%s > /shared/backup-last-success

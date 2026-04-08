@@ -1,22 +1,23 @@
 services:
-  unvr-nas-backup:
-    image: ghcr.io/ozark-connect/unvr-nas-backup:latest
-    build: .
-    container_name: unvr-nas-backup
+  exporter:
+    build: ./exporter
+    image: ghcr.io/ozark-connect/unvr-nas-backup-exporter:latest
+    container_name: unvr-nas-backup-exporter
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "${API_PORT:-7550}:${API_PORT:-7550}"
+    expose:
+      - "${EXPORTER_PORT:-8550}"
     volumes:
       - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh-mount:ro
       - staging:/staging
+      - shared:/shared
       - ${ARCHIVE_PATH:?ARCHIVE_PATH is required}:/archive
       # Uncomment to use AWS credentials from host (alternative to env vars)
       # - ${AWS_CONFIG_PATH:-~/.aws}:/root/.aws:ro
     tmpfs:
       - /tmp:size=2G
     healthcheck:
-      test: ["CMD", "sh", "-c", "pgrep -x cron && [ -f /tmp/backup-last-success ]"]
+      test: ["CMD", "sh", "-c", "pgrep -x cron && [ -f /shared/backup-last-success ]"]
       interval: 60s
       timeout: 5s
       retries: 3
@@ -27,5 +28,51 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  api:
+    build: ./api
+    image: ghcr.io/ozark-connect/unvr-nas-backup-api:latest
+    container_name: unvr-nas-backup-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - EXPORTER_URL=http://exporter:${EXPORTER_PORT:-8550}
+    expose:
+      - "${API_PORT:-7550}"
+    volumes:
+      - shared:/shared:ro
+      - ${ARCHIVE_PATH:?ARCHIVE_PATH is required}:/archive:ro
+      # Uncomment to use AWS credentials from host (for S3 inventory queries)
+      # - ${AWS_CONFIG_PATH:-~/.aws}:/root/.aws:ro
+    depends_on:
+      - exporter
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:${API_PORT:-7550}/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:alpine
+    container_name: unvr-nas-backup-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
 volumes:
   staging:
+  shared:
