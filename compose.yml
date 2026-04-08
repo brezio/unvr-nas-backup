@@ -62,7 +62,7 @@ services:
     container_name: unvr-nas-backup-nginx
     restart: unless-stopped
     ports:
-      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_PORT:-7550}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

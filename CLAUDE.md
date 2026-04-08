@@ -344,7 +344,7 @@ Both containers read from the shared `.env` file. The API also receives `EXPORTE
 | `API_PORT` | `7550` | api |
 | `EXPORTER_PORT` | `8550` | exporter (trigger server) |
 | `EXPORTER_URL` | `http://exporter:8550` | api (set via compose) |
-| `NGINX_PORT` | `80` | nginx (host port) |
+| `NGINX_PORT` | `7550` | nginx (host port) |
 | `BACKUP_HOURS` | `1` | exporter |
 | `BATCH_SIZE` | `20` | exporter |
 | `BATCH_DELAY` | `5` | exporter |
