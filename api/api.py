@@ -13,9 +13,10 @@ Endpoints:
     GET    /api/backup/{request_id} — look up the status of a backup request
     GET    /api/queue               — inspect the current backup queue
     GET    /api/cameras             — list cameras in the index
+    GET    /api/cameras/{id}        — get a single camera
     POST   /api/cameras             — add a camera to the index
     PATCH  /api/cameras/{id}        — update a camera in the index
-    DELETE /api/cameras             — remove a camera from the index
+    DELETE /api/cameras/{id}        — remove a camera from the index
     GET    /api/cameras/sync        — preview changes from UNVR (dry run)
     POST   /api/cameras/sync        — sync camera index with UNVR and apply changes
 """
@@ -1259,13 +1260,6 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(result)
 
-        elif path == "/api/cameras":
-            camera_id = qs.get("camera_id")
-            result, err = _build_cameras_detail(camera_id=camera_id)
-            if err:
-                self._send_json({"error": err}, status=404)
-            else:
-                self._send_json(result)
         elif path == "/api/cameras/sync":
             try:
                 unvr_cameras = _query_unvr_cameras()
@@ -1281,6 +1275,30 @@ class Handler(BaseHTTPRequestHandler):
                 "changes": changes,
                 "total_changes": len(changes),
             })
+
+        elif path == "/api/cameras":
+            # List all cameras
+            result, err = _build_cameras_detail()
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
+
+        elif path.startswith("/api/cameras/") and path.count("/") == 3:
+            # Single camera by ID: /api/cameras/{camera_id}
+            camera_id = path.split("/")[3]
+            if not camera_id:
+                self._send_json(
+                    {"error": "camera_id is required in the URL path"},
+                    status=400,
+                )
+                return
+            result, err = _build_cameras_detail(camera_id=camera_id)
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
+
         elif path == "/api/queue":
             self._send_json(_get_queue_info())
 
@@ -1308,10 +1326,11 @@ class Handler(BaseHTTPRequestHandler):
                 "POST   /api/backup",
                 "GET    /api/backup/{request_id}",
                 "GET    /api/queue",
-                "GET    /api/cameras[?camera_id=<id>]",
+                "GET    /api/cameras",
+                "GET    /api/cameras/{id}",
                 "POST   /api/cameras",
                 "PATCH  /api/cameras/{id}",
-                "DELETE /api/cameras",
+                "DELETE /api/cameras/{id}",
                 "GET    /api/cameras/sync",
                 "POST   /api/cameras/sync",
                 "GET    /api/health",
@@ -1421,21 +1440,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, status=404)
 
     def do_DELETE(self):
-        path, qs = self._parse_query()
+        path, _ = self._parse_query()
 
-        if path == "/api/cameras":
-            # Accept camera_id from query string or JSON body
-            camera_id = qs.get("camera_id")
-            if not camera_id:
-                body = self._read_json_body()
-                if body is None:
-                    self._send_json({"error": "invalid JSON body"}, status=400)
-                    return
-                camera_id = body.get("camera_id") or body.get("id")
-
+        # Match DELETE /api/cameras/{camera_id}
+        if path.startswith("/api/cameras/") and path.count("/") == 3:
+            camera_id = path.split("/")[3]
             if not camera_id:
                 self._send_json(
-                    {"error": "camera_id is required (query param or JSON body)"},
+                    {"error": "camera_id is required in the URL path"},
                     status=400,
                 )
                 return

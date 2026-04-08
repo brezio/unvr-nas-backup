@@ -245,6 +245,14 @@ Response shape (single camera via `?camera_id=<id>`):
 
 Returns `404` when `camera_id` is provided but not found in the index.
 
+### DELETE /api/cameras/{camera_id}
+
+Removes a camera from the index. Returns `404` if not found.
+
+Example: `DELETE /api/cameras/abc123`
+
+Response: `{ "removed": "abc123" }`
+
 ### POST /api/cameras
 
 Adds a camera to the index. Returns `201 Created` or `409 Conflict` if it already exists.
@@ -273,14 +281,6 @@ Request body (JSON):
 | `timezone` | string | no | New IANA timezone |
 
 At least one of `name`, `enabled`, or `timezone` is required. Response: the updated camera object.
-
-### DELETE /api/cameras
-
-Removes a camera from the index. Accepts `camera_id` as a query parameter or in a JSON body. Returns `404` if not found.
-
-Example: `DELETE /api/cameras?camera_id=abc123`
-
-Response: `{ "removed": "abc123" }`
 
 ### GET /api/cameras/sync
 
