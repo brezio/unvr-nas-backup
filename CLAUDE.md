@@ -207,7 +207,7 @@ Response shape (list):
 ```json
 {
   "cameras": [{
-    "id": str, "name": str, "enabled": bool,
+    "id": str, "name": str, "timezone": str|null, "enabled": bool,
     "archive": { "oldest_ms": int, "newest_ms": int, "recording_count": int } | null,
     "s3": { "oldest_ms": int, "newest_ms": int, "recording_count": int } | null,
     "unvr": { "oldest_ms": int, "newest_ms": int, "recording_count": int } | null
@@ -221,7 +221,7 @@ Response shape (list):
 Response shape (single camera via `?camera_id=<id>`):
 ```json
 {
-  "id": str, "name": str, "enabled": bool,
+  "id": str, "name": str, "timezone": str|null, "enabled": bool,
   "archive": { ... } | null,
   "s3": { ... } | null,
   "unvr": { ... } | null,
@@ -247,6 +247,7 @@ Request body (JSON):
 | `camera_id` | string | yes | Protect database camera ID |
 | `name` | string | no | Human-readable label |
 | `enabled` | boolean | no | Include in scheduled backups (default `true`) |
+| `timezone` | string | no | IANA timezone (e.g. `America/Chicago`) |
 
 Response: the created camera object.
 
@@ -260,8 +261,9 @@ Request body (JSON):
 |---|---|---|---|
 | `name` | string | no | New name |
 | `enabled` | boolean | no | New enabled state |
+| `timezone` | string | no | New IANA timezone |
 
-At least one of `name` or `enabled` is required. Response: the updated camera object.
+At least one of `name`, `enabled`, or `timezone` is required. Response: the updated camera object.
 
 ### DELETE /api/cameras
 
@@ -279,12 +281,13 @@ Sync rules:
 - Camera on UNVR but not in config → `add` with `enabled: false`
 - Camera in config but not on UNVR (and currently enabled) → `disable`
 - Name differs between UNVR and config → `update_name`
+- Timezone differs between UNVR and config → `update_timezone`
 
 Response shape:
 ```json
 {
   "unvr_cameras": int,
-  "changes": [{ "action": "add|disable|update_name", "camera_id": str, "reason": str, ... }],
+  "changes": [{ "action": "add|disable|update_name|update_timezone", "camera_id": str, "reason": str, ... }],
   "total_changes": int
 }
 ```
@@ -309,7 +312,7 @@ Response shape:
 ```json
 {
   "cameras": [
-    { "id": "hex_camera_id", "name": "Human Name", "enabled": true }
+    { "id": "hex_camera_id", "name": "Human Name", "timezone": "America/Chicago", "enabled": true }
   ],
   "last_synced": 1744034400
 }

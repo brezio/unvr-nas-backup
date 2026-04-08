@@ -614,6 +614,7 @@ def _build_cameras_detail(camera_id=None):
         entry = {
             "id": cid,
             "name": cam.get("name"),
+            "timezone": cam.get("timezone"),
             "enabled": cam.get("enabled", True),
             "archive": local.get(cid),
             "s3": s3.get(cid) if S3_ENABLED else None,
@@ -639,7 +640,7 @@ def _build_cameras_detail(camera_id=None):
     return result, None
 
 
-def _add_camera(camera_id, name=None, enabled=True):
+def _add_camera(camera_id, name=None, enabled=True, timezone=None):
     """Add a camera to the index. Returns (result, error)."""
     if not camera_id or not isinstance(camera_id, str):
         return None, "camera_id is required and must be a string"
@@ -655,6 +656,8 @@ def _add_camera(camera_id, name=None, enabled=True):
     entry = {"id": camera_id, "enabled": enabled}
     if name:
         entry["name"] = name
+    if timezone:
+        entry["timezone"] = timezone
 
     cameras.append(entry)
     data["cameras"] = cameras
@@ -683,7 +686,7 @@ def _remove_camera(camera_id):
     return {"removed": camera_id}, None
 
 
-def _update_camera(camera_id, name=None, enabled=None):
+def _update_camera(camera_id, name=None, enabled=None, timezone=None):
     """Update a camera in the index. Returns (result, error)."""
     if not camera_id or not isinstance(camera_id, str):
         return None, "camera_id is required and must be a string"
@@ -697,6 +700,8 @@ def _update_camera(camera_id, name=None, enabled=None):
                 cam["name"] = name
             if enabled is not None:
                 cam["enabled"] = enabled
+            if timezone is not None:
+                cam["timezone"] = timezone
             _write_index(data)
             return cam, None
 
@@ -706,15 +711,15 @@ def _update_camera(camera_id, name=None, enabled=None):
 def _query_unvr_cameras():
     """SSH into the UNVR and query the cameras table.
 
-    Returns a list of dicts [{"id": "...", "name": "..."}, ...] or raises
-    RuntimeError on failure.
+    Returns a list of dicts [{"id": "...", "name": "...", "timezone": "..."}, ...]
+    or raises RuntimeError on failure.
     """
     if not PROTECT_HOST:
         raise RuntimeError("PROTECT_HOST is not configured")
     if not SSH_OPTS:
         raise RuntimeError("SSH_OPTS is not set (container may not be fully initialized)")
 
-    sql = "COPY (SELECT id, name FROM cameras ORDER BY name) TO STDOUT WITH CSV HEADER;"
+    sql = "COPY (SELECT id, name, timezone FROM cameras ORDER BY name) TO STDOUT WITH CSV HEADER;"
     ssh_cmd = SSH_OPTS.split() + [
         f"{PROTECT_SSH_USER}@{PROTECT_HOST}",
         f"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At",
@@ -736,9 +741,14 @@ def _query_unvr_cameras():
     for line in result.stdout.strip().splitlines():
         if not line or line.startswith("id,"):
             continue
-        parts = line.split(",", 1)
-        if len(parts) == 2:
-            cameras.append({"id": parts[0].strip(), "name": parts[1].strip()})
+        parts = line.split(",", 2)
+        if len(parts) >= 2:
+            entry = {"id": parts[0].strip(), "name": parts[1].strip()}
+            if len(parts) >= 3:
+                entry["timezone"] = parts[2].strip() or None
+            else:
+                entry["timezone"] = None
+            cameras.append(entry)
 
     return cameras
 
@@ -752,17 +762,18 @@ def _compute_sync_changes(unvr_cameras):
     """
     data = _read_index()
     index_cams = {c["id"]: c for c in data.get("cameras", [])}
-    unvr_map = {c["id"]: c["name"] for c in unvr_cameras}
+    unvr_map = {c["id"]: c for c in unvr_cameras}
 
     changes = []
 
     # Cameras on UNVR but not in index → add as disabled
-    for uid, uname in unvr_map.items():
+    for uid, ucam in unvr_map.items():
         if uid not in index_cams:
             changes.append({
                 "action": "add",
                 "camera_id": uid,
-                "name": uname,
+                "name": ucam["name"],
+                "timezone": ucam.get("timezone"),
                 "enabled": False,
                 "reason": "exists on UNVR but not in config",
             })
@@ -778,10 +789,11 @@ def _compute_sync_changes(unvr_cameras):
                     "reason": "exists in config but not on UNVR",
                 })
 
-    # Cameras in both → check name
+    # Cameras in both → check name and timezone
     for iid, icam in index_cams.items():
         if iid in unvr_map:
-            unvr_name = unvr_map[iid]
+            ucam = unvr_map[iid]
+            unvr_name = ucam["name"]
             index_name = icam.get("name")
             if index_name != unvr_name:
                 changes.append({
@@ -790,6 +802,17 @@ def _compute_sync_changes(unvr_cameras):
                     "old_name": index_name,
                     "new_name": unvr_name,
                     "reason": "name differs between UNVR and config",
+                })
+
+            unvr_tz = ucam.get("timezone")
+            index_tz = icam.get("timezone")
+            if unvr_tz and index_tz != unvr_tz:
+                changes.append({
+                    "action": "update_timezone",
+                    "camera_id": iid,
+                    "old_timezone": index_tz,
+                    "new_timezone": unvr_tz,
+                    "reason": "timezone differs between UNVR and config",
                 })
 
     return changes, data
@@ -808,6 +831,8 @@ def _apply_sync_changes(changes, data):
 
         if action == "add":
             entry = {"id": cid, "name": change["name"], "enabled": False}
+            if change.get("timezone"):
+                entry["timezone"] = change["timezone"]
             index_cams[cid] = entry
 
         elif action == "disable":
@@ -817,6 +842,10 @@ def _apply_sync_changes(changes, data):
         elif action == "update_name":
             if cid in index_cams:
                 index_cams[cid]["name"] = change["new_name"]
+
+        elif action == "update_timezone":
+            if cid in index_cams:
+                index_cams[cid]["timezone"] = change["new_timezone"]
 
     # Rebuild the cameras list sorted by name for consistency
     cameras = sorted(index_cams.values(), key=lambda c: c.get("name", ""))
@@ -1362,6 +1391,7 @@ class Handler(BaseHTTPRequestHandler):
             camera_id = body.get("camera_id") or body.get("id")
             name = body.get("name")
             enabled = body.get("enabled", True)
+            timezone = body.get("timezone")
 
             if not camera_id:
                 self._send_json(
@@ -1377,7 +1407,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            result, err = _add_camera(camera_id, name=name, enabled=enabled)
+            result, err = _add_camera(camera_id, name=name, enabled=enabled, timezone=timezone)
             if err:
                 self._send_json({"error": err}, status=409)
             else:
@@ -1433,6 +1463,7 @@ class Handler(BaseHTTPRequestHandler):
 
             name = body.get("name")
             enabled = body.get("enabled")
+            timezone = body.get("timezone")
 
             if enabled is not None and not isinstance(enabled, bool):
                 self._send_json(
@@ -1441,14 +1472,14 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            if name is None and enabled is None:
+            if name is None and enabled is None and timezone is None:
                 self._send_json(
-                    {"error": "at least one of name or enabled is required"},
+                    {"error": "at least one of name, enabled, or timezone is required"},
                     status=400,
                 )
                 return
 
-            result, err = _update_camera(camera_id, name=name, enabled=enabled)
+            result, err = _update_camera(camera_id, name=name, enabled=enabled, timezone=timezone)
             if err:
                 self._send_json({"error": err}, status=404)
             else:
