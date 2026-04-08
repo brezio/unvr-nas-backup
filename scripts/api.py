@@ -6,16 +6,18 @@ so no pip dependencies are required. Reads the same environment variables and
 file-system state that backup.sh uses.
 
 Endpoints:
-    GET    /api/status        — current backup health and configuration
-    GET    /api/backups       — list all archived recordings with local/S3 location
-    GET    /api/playback      — files needed to play back a camera's footage for a time range
-    POST   /api/backup        — trigger a backup (optional camera_id and time range)
-    GET    /api/cameras       — list cameras in the index
-    POST   /api/cameras       — add a camera to the index
-    PATCH  /api/cameras/{id}  — update a camera in the index
-    DELETE /api/cameras       — remove a camera from the index
-    GET    /api/cameras/sync  — preview changes from UNVR (dry run)
-    POST   /api/cameras/sync  — sync camera index with UNVR and apply changes
+    GET    /api/status              — current backup health and configuration
+    GET    /api/backups             — list all archived recordings with local/S3 location
+    GET    /api/playback            — files needed to play back a camera's footage for a time range
+    POST   /api/backup              — trigger or queue a backup (returns request_id)
+    GET    /api/backup/{request_id} — look up the status of a backup request
+    GET    /api/queue               — inspect the current backup queue
+    GET    /api/cameras             — list cameras in the index
+    POST   /api/cameras             — add a camera to the index
+    PATCH  /api/cameras/{id}        — update a camera in the index
+    DELETE /api/cameras             — remove a camera from the index
+    GET    /api/cameras/sync        — preview changes from UNVR (dry run)
+    POST   /api/cameras/sync        — sync camera index with UNVR and apply changes
 """
 
 import calendar
@@ -23,10 +25,13 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
+import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+from urllib.request import Request, urlopen
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -54,6 +59,268 @@ PROTECT_SSH_USER = os.environ.get("PROTECT_SSH_USER", "root")
 PROTECT_DB_PORT = os.environ.get("PROTECT_DB_PORT", "5433")
 PROTECT_DB_NAME = os.environ.get("PROTECT_DB_NAME", "unifi-protect")
 SSH_OPTS = os.environ.get("SSH_OPTS", "")
+
+
+# ── Backup Queue ───────────────────────────────────────────────────────────
+#
+# In-memory queue for backup requests. When a backup is already running,
+# new requests are queued and executed in order once the current backup
+# finishes. Identical requests (same camera_id/start/end) are deduplicated.
+# Each request gets a UUID for status tracking and supports an optional
+# callback URL that is POSTed to when the request completes.
+
+_queue_lock = threading.Lock()
+_queue: list[dict] = []           # ordered list of pending requests
+_requests: dict[str, dict] = {}   # request_id → full request state
+_dedup_set: set[tuple] = set()    # (camera_id, start, end) tuples currently queued
+
+# Request states: queued → running → completed | failed
+# Completed/failed requests are kept for lookup but pruned after 1 hour.
+
+_REQUEST_TTL = 3600  # seconds to keep finished requests
+
+
+def _dedup_key(camera_id, start, end):
+    """Return the deduplication key for a backup request."""
+    return (camera_id or "", start or 0, end or 0)
+
+
+def _prune_finished_requests():
+    """Remove completed/failed requests older than _REQUEST_TTL."""
+    now = time.time()
+    expired = [
+        rid for rid, req in _requests.items()
+        if req["status"] in ("completed", "failed")
+        and now - req.get("finished_at", now) > _REQUEST_TTL
+    ]
+    for rid in expired:
+        _requests.pop(rid, None)
+
+
+def _enqueue_backup(camera_id=None, start=None, end=None, callback_url=None):
+    """Add a backup request to the queue.
+
+    Returns (request_dict, error_string). On success the request dict
+    contains the assigned ``request_id`` and current ``status``.
+    Duplicate requests (same camera_id/start/end already queued) return
+    the existing request rather than creating a new entry.
+    """
+    key = _dedup_key(camera_id, start, end)
+
+    with _queue_lock:
+        _prune_finished_requests()
+
+        # Dedup: if an identical request is already queued, return it
+        if key in _dedup_set:
+            for req in _queue:
+                if req["_dedup_key"] == key and req["status"] == "queued":
+                    # Merge callback URL if new request brings one
+                    if callback_url and callback_url not in req.get("callback_urls", []):
+                        req.setdefault("callback_urls", []).append(callback_url)
+                    return {
+                        "request_id": req["request_id"],
+                        "status": req["status"],
+                        "queued": True,
+                        "duplicate": True,
+                        "position": _queue.index(req) + 1,
+                        "params": req["params"],
+                    }, None
+
+        request_id = str(uuid.uuid4())
+        params = {}
+        if camera_id:
+            params["camera_id"] = camera_id
+        if start is not None:
+            params["start"] = int(start)
+        if end is not None:
+            params["end"] = int(end)
+
+        req = {
+            "request_id": request_id,
+            "status": "queued",
+            "params": params if params else "defaults",
+            "callback_urls": [callback_url] if callback_url else [],
+            "created_at": time.time(),
+            "started_at": None,
+            "finished_at": None,
+            "result": None,
+            "_dedup_key": key,
+            "_camera_id": camera_id,
+            "_start": start,
+            "_end": end,
+        }
+
+        _queue.append(req)
+        _requests[request_id] = req
+        _dedup_set.add(key)
+
+        position = len(_queue)
+
+    return {
+        "request_id": request_id,
+        "status": "queued",
+        "queued": True,
+        "duplicate": False,
+        "position": position,
+        "params": req["params"],
+    }, None
+
+
+def _fire_callbacks(req, payload):
+    """POST the result payload to each callback URL (best-effort)."""
+    for url in req.get("callback_urls", []):
+        try:
+            data = json.dumps(payload).encode()
+            http_req = Request(url, data=data, method="POST")
+            http_req.add_header("Content-Type", "application/json")
+            urlopen(http_req, timeout=10)
+        except Exception:
+            pass  # best-effort — don't let callback failures block the queue
+
+
+def _process_queue():
+    """Background thread: waits for idle state then runs the next queued backup.
+
+    Polls every 5 seconds. When the system is idle and the queue is
+    non-empty, pops the next request and executes it synchronously
+    (from this thread's perspective). After the backup finishes,
+    fires any registered callback URLs.
+    """
+    while True:
+        time.sleep(5)
+
+        with _queue_lock:
+            if not _queue:
+                continue
+            if _backup_is_running():
+                continue
+
+            # Pop the next request
+            req = _queue.pop(0)
+            key = req["_dedup_key"]
+            _dedup_set.discard(key)
+            req["status"] = "running"
+            req["started_at"] = time.time()
+
+        # Run the backup synchronously (blocks this thread, not the API)
+        camera_id = req["_camera_id"]
+        start = req["_start"]
+        end = req["_end"]
+
+        env = os.environ.copy()
+        if camera_id:
+            env["BACKUP_CAMERA_ID"] = str(camera_id)
+        if start is not None:
+            env["BACKUP_START"] = str(int(start))
+        if end is not None:
+            env["BACKUP_END"] = str(int(end))
+
+        try:
+            result = subprocess.run(
+                ["/usr/local/bin/backup.sh"],
+                env=env,
+                stdout=open("/proc/1/fd/1", "w"),
+                stderr=open("/proc/1/fd/2", "w"),
+            )
+            success = result.returncode == 0
+        except OSError:
+            success = False
+
+        with _queue_lock:
+            req["finished_at"] = time.time()
+            if success:
+                req["status"] = "completed"
+                req["result"] = "backup completed successfully"
+            else:
+                req["status"] = "failed"
+                req["result"] = "backup process exited with an error"
+
+        # Fire callbacks in a separate thread so we don't block the queue
+        payload = {
+            "request_id": req["request_id"],
+            "status": req["status"],
+            "result": req["result"],
+            "params": req["params"],
+            "started_at": req["started_at"],
+            "finished_at": req["finished_at"],
+            "duration_seconds": round(req["finished_at"] - req["started_at"], 1),
+        }
+        threading.Thread(target=_fire_callbacks, args=(req, payload), daemon=True).start()
+
+
+def _get_request_status(request_id):
+    """Look up a backup request by ID. Returns (dict, error)."""
+    with _queue_lock:
+        _prune_finished_requests()
+        req = _requests.get(request_id)
+
+    if not req:
+        return None, f"request not found: {request_id}"
+
+    info = {
+        "request_id": req["request_id"],
+        "status": req["status"],
+        "params": req["params"],
+        "created_at": req["created_at"],
+        "started_at": req["started_at"],
+        "finished_at": req["finished_at"],
+        "result": req["result"],
+    }
+
+    # Add position if still queued
+    if req["status"] == "queued":
+        with _queue_lock:
+            try:
+                info["position"] = _queue.index(req) + 1
+            except ValueError:
+                pass
+
+    # Add duration if finished
+    if req["started_at"] and req["finished_at"]:
+        info["duration_seconds"] = round(req["finished_at"] - req["started_at"], 1)
+
+    return info, None
+
+
+def _get_queue_info():
+    """Build the response payload for GET /api/queue."""
+    with _queue_lock:
+        _prune_finished_requests()
+        queued = [r for r in _queue if r["status"] == "queued"]
+        running = [r for r in _requests.values() if r["status"] == "running"]
+
+    # Estimate wait time: average of recent completed backups
+    recent_durations = []
+    with _queue_lock:
+        for req in _requests.values():
+            if req["status"] == "completed" and req["started_at"] and req["finished_at"]:
+                recent_durations.append(req["finished_at"] - req["started_at"])
+
+    avg_duration = (sum(recent_durations) / len(recent_durations)) if recent_durations else None
+
+    items = []
+    for i, req in enumerate(queued):
+        entry = {
+            "request_id": req["request_id"],
+            "position": i + 1,
+            "params": req["params"],
+            "created_at": req["created_at"],
+        }
+        if avg_duration is not None:
+            # Position in queue + 1 for currently running backup
+            ahead = i + (1 if running else 0)
+            entry["estimated_wait_seconds"] = round(ahead * avg_duration, 1)
+        items.append(entry)
+
+    result = {
+        "queue_size": len(queued),
+        "backup_running": bool(running),
+        "items": items,
+    }
+    if avg_duration is not None:
+        result["average_backup_duration_seconds"] = round(avg_duration, 1)
+
+    return result
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -581,6 +848,7 @@ def _build_status():
         },
         "camera_index": _build_cameras(),
         "last_synced": _read_index().get("last_synced"),
+        "queue": _get_queue_info(),
     }
     return status
 
@@ -777,14 +1045,60 @@ def _build_playback(camera_id, range_start_ms, range_end_ms):
     }, None
 
 
-def _trigger_backup(camera_id=None, start=None, end=None):
-    """Launch backup.sh in the background with optional overrides.
+def _trigger_backup(camera_id=None, start=None, end=None, callback_url=None):
+    """Trigger a backup, either immediately or via the queue.
 
-    Returns a dict suitable for the JSON response. The backup runs
-    asynchronously — this function returns immediately after spawning.
+    If no backup is running and the queue is empty, launches backup.sh
+    directly and returns immediately. Otherwise the request is queued
+    and will execute once all preceding requests have finished.
+
+    Every request receives a unique ``request_id`` for status tracking.
+    An optional *callback_url* will be POSTed with the result payload
+    when the request finishes processing.
+
+    Returns a dict suitable for the JSON response.
     """
-    if _backup_is_running():
-        return None, "a backup is already running"
+    # Build the canonical request ID regardless of path
+    request_id = str(uuid.uuid4())
+    params = {}
+    if camera_id:
+        params["camera_id"] = camera_id
+    if start is not None:
+        params["start"] = int(start)
+    if end is not None:
+        params["end"] = int(end)
+
+    running = _backup_is_running()
+    queue_non_empty = bool(_queue)
+
+    # If system is busy (backup running or queue non-empty), enqueue
+    if running or queue_non_empty:
+        result, err = _enqueue_backup(
+            camera_id=camera_id, start=start, end=end,
+            callback_url=callback_url,
+        )
+        if err:
+            return None, err
+        return result, None
+
+    # System is idle — run immediately but still track the request
+    key = _dedup_key(camera_id, start, end)
+    req = {
+        "request_id": request_id,
+        "status": "running",
+        "params": params if params else "defaults",
+        "callback_urls": [callback_url] if callback_url else [],
+        "created_at": time.time(),
+        "started_at": time.time(),
+        "finished_at": None,
+        "result": None,
+        "_dedup_key": key,
+        "_camera_id": camera_id,
+        "_start": start,
+        "_end": end,
+    }
+    with _queue_lock:
+        _requests[request_id] = req
 
     # Build environment: inherit current env, add overrides
     env = os.environ.copy()
@@ -795,26 +1109,47 @@ def _trigger_backup(camera_id=None, start=None, end=None):
     if end is not None:
         env["BACKUP_END"] = str(int(end))
 
+    def _run_and_track():
+        try:
+            result = subprocess.run(
+                ["/usr/local/bin/backup.sh"],
+                env=env,
+                stdout=open("/proc/1/fd/1", "w"),
+                stderr=open("/proc/1/fd/2", "w"),
+            )
+            success = result.returncode == 0
+        except OSError:
+            success = False
+
+        with _queue_lock:
+            req["finished_at"] = time.time()
+            if success:
+                req["status"] = "completed"
+                req["result"] = "backup completed successfully"
+            else:
+                req["status"] = "failed"
+                req["result"] = "backup process exited with an error"
+
+        payload = {
+            "request_id": req["request_id"],
+            "status": req["status"],
+            "result": req["result"],
+            "params": req["params"],
+            "started_at": req["started_at"],
+            "finished_at": req["finished_at"],
+            "duration_seconds": round(req["finished_at"] - req["started_at"], 1),
+        }
+        threading.Thread(target=_fire_callbacks, args=(req, payload), daemon=True).start()
+
     try:
-        subprocess.Popen(
-            ["/usr/local/bin/backup.sh"],
-            env=env,
-            stdout=open("/proc/1/fd/1", "w"),
-            stderr=open("/proc/1/fd/2", "w"),
-        )
-    except OSError as exc:
+        threading.Thread(target=_run_and_track, daemon=True).start()
+    except Exception as exc:
         return None, f"failed to start backup: {exc}"
 
-    params = {}
-    if camera_id:
-        params["camera_id"] = camera_id
-    if start is not None:
-        params["start"] = int(start)
-    if end is not None:
-        params["end"] = int(end)
-
     return {
+        "request_id": request_id,
         "triggered": True,
+        "queued": False,
         "params": params if params else "defaults",
     }, None
 
@@ -912,6 +1247,23 @@ class Handler(BaseHTTPRequestHandler):
                 "changes": changes,
                 "total_changes": len(changes),
             })
+        elif path == "/api/queue":
+            self._send_json(_get_queue_info())
+
+        elif path.startswith("/api/backup/") and path.count("/") == 3:
+            request_id = path.split("/")[3]
+            if not request_id:
+                self._send_json(
+                    {"error": "request_id is required in the URL path"},
+                    status=400,
+                )
+                return
+            result, err = _get_request_status(request_id)
+            if err:
+                self._send_json({"error": err}, status=404)
+            else:
+                self._send_json(result)
+
         elif path == "/api/health":
             self._send_json({"ok": True})
         else:
@@ -920,6 +1272,8 @@ class Handler(BaseHTTPRequestHandler):
                 "GET    /api/backups",
                 "GET    /api/playback?camera_id=<id>&start=<epoch_ms>&end=<epoch_ms>",
                 "POST   /api/backup",
+                "GET    /api/backup/{request_id}",
+                "GET    /api/queue",
                 "GET    /api/cameras[?camera_id=<id>]",
                 "POST   /api/cameras",
                 "PATCH  /api/cameras/{id}",
@@ -942,6 +1296,7 @@ class Handler(BaseHTTPRequestHandler):
             camera_id = body.get("camera_id")
             start = body.get("start")
             end = body.get("end")
+            callback_url = body.get("callback_url")
 
             if camera_id is not None and not isinstance(camera_id, str):
                 self._send_json({"error": "camera_id must be a string"}, status=400)
@@ -954,8 +1309,14 @@ class Handler(BaseHTTPRequestHandler):
                             status=400,
                         )
                         return
+            if callback_url is not None and not isinstance(callback_url, str):
+                self._send_json({"error": "callback_url must be a string"}, status=400)
+                return
 
-            result, err = _trigger_backup(camera_id=camera_id, start=start, end=end)
+            result, err = _trigger_backup(
+                camera_id=camera_id, start=start, end=end,
+                callback_url=callback_url,
+            )
             if err:
                 self._send_json({"error": err}, status=409)
             else:
@@ -1103,6 +1464,11 @@ class Handler(BaseHTTPRequestHandler):
 # ── Main ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Start the background queue processor thread
+    _queue_thread = threading.Thread(target=_process_queue, daemon=True)
+    _queue_thread.start()
+    print("[api] Queue processor started", flush=True)
+
     server = HTTPServer(("0.0.0.0", API_PORT), Handler)
     print(f"[api] Listening on port {API_PORT}", flush=True)
     try:

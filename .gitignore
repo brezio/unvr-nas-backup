@@ -11,6 +11,10 @@ staging/
 archive/
 *.log
 
+# Python
+__pycache__/
+*.pyc
+
 # Claude Code
 CLAUDE.md
 .claude/
