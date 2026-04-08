@@ -57,12 +57,6 @@ CRON_SCHEDULE = os.environ.get("CRON_SCHEDULE", "*/15 * * * *")
 
 INDEX_FILE = ARCHIVE_DIR / "_index.json"
 
-# UNVR connection (reuses the same env vars as backup.sh / entrypoint.sh)
-PROTECT_HOST = os.environ.get("PROTECT_HOST", "")
-PROTECT_SSH_USER = os.environ.get("PROTECT_SSH_USER", "root")
-PROTECT_DB_PORT = os.environ.get("PROTECT_DB_PORT", "5433")
-PROTECT_DB_NAME = os.environ.get("PROTECT_DB_NAME", "unifi-protect")
-SSH_OPTS = os.environ.get("SSH_OPTS", "")
 
 
 # ── Backup Queue ───────────────────────────────────────────────────────────
@@ -521,68 +515,30 @@ def _s3_ranges():
 
 
 def _unvr_ranges(camera_id=None):
-    """Query the UNVR for per-camera recording date ranges.
+    """Query the UNVR for per-camera recording date ranges via the exporter.
 
     If *camera_id* is given, limits the query to that single camera.
 
     Returns dict: {camera_id: {"oldest_ms": int, "newest_ms": int, "recording_count": int}}
-    Raises RuntimeError on SSH/DB failure.
+    Raises RuntimeError on failure.
     """
-    if not PROTECT_HOST or not SSH_OPTS:
-        raise RuntimeError("PROTECT_HOST or SSH_OPTS not configured")
-
-    where_clause = ""
+    url = f"{EXPORTER_URL}/unvr/ranges"
     if camera_id:
-        where_clause = f"WHERE c.id = '{camera_id}'"
-
-    sql = (
-        f'SELECT c.id, MIN(rf.start), MAX(rf."end"), COUNT(*) '
-        f'FROM cameras c '
-        f'JOIN "recordingFiles" rf ON c.id = rf."cameraId" '
-        f'{where_clause} '
-        f'GROUP BY c.id'
-    )
-    # Build SSH command as a list to avoid nested shell escaping issues.
-    # The SQL is passed via stdin to psql so no quoting of identifiers
-    # like "recordingFiles" is needed beyond what PostgreSQL requires.
-    ssh_cmd = SSH_OPTS.split() + [
-        f"{PROTECT_SSH_USER}@{PROTECT_HOST}",
-        f"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At -F,",
-    ]
+        url += f"?camera_id={camera_id}"
 
     try:
-        result = subprocess.run(
-            ["ssh"] + ssh_cmd,
-            input=sql, capture_output=True, text=True, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("SSH connection to UNVR timed out")
-
-    if result.returncode != 0:
-        stderr = result.stderr.strip()[:200]
-        raise RuntimeError(f"UNVR query failed: {stderr}")
-
-    ranges = {}
-    for line in result.stdout.strip().splitlines():
-        if not line:
-            continue
-        parts = line.split(",")
-        if len(parts) < 4:
-            continue
-        cid = parts[0].strip()
-        try:
-            oldest = int(parts[1].strip())
-            newest = int(parts[2].strip())
-            count = int(parts[3].strip())
-        except ValueError:
-            continue
-        ranges[cid] = {
-            "oldest_ms": oldest,
-            "newest_ms": newest,
-            "recording_count": count,
-        }
-
-    return ranges
+        resp = urlopen(Request(url), timeout=20)
+        data = json.loads(resp.read())
+        return data.get("ranges", {})
+    except Exception as exc:
+        # Try to extract the error message from a JSON error response
+        if hasattr(exc, "read"):
+            try:
+                err = json.loads(exc.read()).get("error", str(exc))
+                raise RuntimeError(err)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        raise RuntimeError(f"exporter query failed: {exc}")
 
 
 def _build_cameras_detail(camera_id=None):
@@ -714,48 +670,25 @@ def _update_camera(camera_id, name=None, enabled=None, timezone=None):
 
 
 def _query_unvr_cameras():
-    """SSH into the UNVR and query the cameras table.
+    """Query the UNVR cameras table via the exporter.
 
     Returns a list of dicts [{"id": "...", "name": "...", "timezone": "..."}, ...]
     or raises RuntimeError on failure.
     """
-    if not PROTECT_HOST:
-        raise RuntimeError("PROTECT_HOST is not configured")
-    if not SSH_OPTS:
-        raise RuntimeError("SSH_OPTS is not set (container may not be fully initialized)")
-
-    sql = "COPY (SELECT id, name, timezone FROM cameras ORDER BY name) TO STDOUT WITH CSV HEADER;"
-    ssh_cmd = SSH_OPTS.split() + [
-        f"{PROTECT_SSH_USER}@{PROTECT_HOST}",
-        f"psql -p {PROTECT_DB_PORT} -U postgres -d {PROTECT_DB_NAME} -At",
-    ]
+    url = f"{EXPORTER_URL}/unvr/cameras"
 
     try:
-        result = subprocess.run(
-            ["ssh"] + ssh_cmd,
-            input=sql, capture_output=True, text=True, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("SSH connection to UNVR timed out")
-
-    if result.returncode != 0:
-        stderr = result.stderr.strip()[:200]
-        raise RuntimeError(f"UNVR query failed: {stderr}")
-
-    cameras = []
-    for line in result.stdout.strip().splitlines():
-        if not line or line.startswith("id,"):
-            continue
-        parts = line.split(",", 2)
-        if len(parts) >= 2:
-            entry = {"id": parts[0].strip(), "name": parts[1].strip()}
-            if len(parts) >= 3:
-                entry["timezone"] = parts[2].strip() or None
-            else:
-                entry["timezone"] = None
-            cameras.append(entry)
-
-    return cameras
+        resp = urlopen(Request(url), timeout=20)
+        data = json.loads(resp.read())
+        return data.get("cameras", [])
+    except Exception as exc:
+        if hasattr(exc, "read"):
+            try:
+                err = json.loads(exc.read()).get("error", str(exc))
+                raise RuntimeError(err)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        raise RuntimeError(f"exporter query failed: {exc}")
 
 
 def _compute_sync_changes(unvr_cameras):
