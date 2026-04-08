@@ -57,6 +57,26 @@ CRON_SCHEDULE = os.environ.get("CRON_SCHEDULE", "*/15 * * * *")
 
 INDEX_FILE = ARCHIVE_DIR / "_index.json"
 
+# ── Device timezone (fetched from exporter on first use) ────────────────────
+_device_tz_cache = {"value": None}
+
+
+def _get_device_timezone():
+    """Fetch the Protect device's timezone from the exporter, with caching."""
+    if _device_tz_cache["value"] is not None:
+        return _device_tz_cache["value"]
+
+    try:
+        url = f"{EXPORTER_URL}/unvr/timezone"
+        resp = urlopen(Request(url), timeout=5)
+        data = json.loads(resp.read())
+        tz = data.get("timezone", "UTC")
+    except Exception:
+        tz = "UTC"
+
+    _device_tz_cache["value"] = tz
+    return tz
+
 
 
 # ── Backup Queue ───────────────────────────────────────────────────────────
@@ -575,7 +595,7 @@ def _build_cameras_detail(camera_id=None):
         entry = {
             "id": cid,
             "name": cam.get("name"),
-            "timezone": cam.get("timezone"),
+            "timezone": cam.get("timezone") or _get_device_timezone(),
             "enabled": cam.get("enabled", True),
             "archive": local.get(cid),
             "s3": s3.get(cid) if S3_ENABLED else None,
@@ -672,7 +692,7 @@ def _update_camera(camera_id, name=None, enabled=None, timezone=None):
 def _query_unvr_cameras():
     """Query the UNVR cameras table via the exporter.
 
-    Returns a list of dicts [{"id": "...", "name": "...", "timezone": "..."}, ...]
+    Returns a list of dicts [{"id": "...", "name": "..."}, ...]
     or raises RuntimeError on failure.
     """
     url = f"{EXPORTER_URL}/unvr/cameras"
@@ -711,7 +731,6 @@ def _compute_sync_changes(unvr_cameras):
                 "action": "add",
                 "camera_id": uid,
                 "name": ucam["name"],
-                "timezone": ucam.get("timezone"),
                 "enabled": False,
                 "reason": "exists on UNVR but not in config",
             })
@@ -727,7 +746,7 @@ def _compute_sync_changes(unvr_cameras):
                     "reason": "exists in config but not on UNVR",
                 })
 
-    # Cameras in both → check name and timezone
+    # Cameras in both → check name
     for iid, icam in index_cams.items():
         if iid in unvr_map:
             ucam = unvr_map[iid]
@@ -740,17 +759,6 @@ def _compute_sync_changes(unvr_cameras):
                     "old_name": index_name,
                     "new_name": unvr_name,
                     "reason": "name differs between UNVR and config",
-                })
-
-            unvr_tz = ucam.get("timezone")
-            index_tz = icam.get("timezone")
-            if unvr_tz and index_tz != unvr_tz:
-                changes.append({
-                    "action": "update_timezone",
-                    "camera_id": iid,
-                    "old_timezone": index_tz,
-                    "new_timezone": unvr_tz,
-                    "reason": "timezone differs between UNVR and config",
                 })
 
     return changes, data
@@ -769,8 +777,6 @@ def _apply_sync_changes(changes, data):
 
         if action == "add":
             entry = {"id": cid, "name": change["name"], "enabled": False}
-            if change.get("timezone"):
-                entry["timezone"] = change["timezone"]
             index_cams[cid] = entry
 
         elif action == "disable":
@@ -780,10 +786,6 @@ def _apply_sync_changes(changes, data):
         elif action == "update_name":
             if cid in index_cams:
                 index_cams[cid]["name"] = change["new_name"]
-
-        elif action == "update_timezone":
-            if cid in index_cams:
-                index_cams[cid]["timezone"] = change["new_timezone"]
 
     # Rebuild the cameras list sorted by name for consistency
     cameras = sorted(index_cams.values(), key=lambda c: c.get("name", ""))

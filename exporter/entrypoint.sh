@@ -68,6 +68,20 @@ fi
 
 export SSH_OPTS
 
+# ── Fetch device timezone via timedatectl ───────────────────────────────────
+# Ubiquiti Protect devices don't store timezone in the database, so we query
+# the system timezone on startup and cache it for the API to use.
+log "Querying device timezone..."
+# shellcheck disable=SC2086
+DEVICE_TZ=$(ssh $SSH_OPTS "${PROTECT_SSH_USER}@${PROTECT_HOST}" \
+    "timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo UTC" \
+    2>/dev/null | tr -d '[:space:]')
+if [ -z "$DEVICE_TZ" ]; then
+    DEVICE_TZ="UTC"
+fi
+log "Device timezone: ${DEVICE_TZ}"
+echo "$DEVICE_TZ" > /shared/timezone
+
 # ── Validate S3 settings (if enabled) ───────────────────────────────────────
 S3_ENABLED="${S3_ENABLED:-false}"
 S3_DELETE_LOCAL="${S3_DELETE_LOCAL:-false}"

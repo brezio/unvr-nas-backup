@@ -14,11 +14,13 @@ The exporter and API share two volumes: `/archive` (the recording archive, read-
 
 Camera selection is controlled by `/archive/_index.json`. When its `cameras` array is empty or the file is missing, all cameras are backed up. When populated, only cameras with `"enabled": true` are included in scheduled runs. API-triggered backups with an explicit `camera_id` bypass the index.
 
+Ubiquiti Protect devices do not store timezone in their database. On startup, the exporter queries the device's system timezone via `timedatectl` over SSH and caches it to `/shared/timezone`. The API fetches this cached value from the exporter's `GET /unvr/timezone` endpoint on first use. Individual cameras can still override the timezone via the camera index (`_index.json`), but the device timezone is used as the default fallback.
+
 ## Key files
 
 - `exporter/backup.sh` — main backup pipeline (query DB → SCP `.ubv` → remux → archive → S3 sync)
 - `exporter/entrypoint.sh` — exporter container init (SSH setup, index creation, trigger server, optional first backup, cron)
-- `exporter/trigger.py` — internal HTTP server that accepts backup trigger requests from the API
+- `exporter/trigger.py` — internal HTTP server that accepts backup trigger requests from the API and serves UNVR metadata (cameras, ranges, timezone)
 - `exporter/Dockerfile` — Debian bookworm-slim with python3, AWS CLI v2, unifi-protect-remux, cron
 - `api/api.py` — stdlib-only HTTP API server (no pip dependencies), all endpoints below
 - `api/Dockerfile` — Debian bookworm-slim with python3, AWS CLI v2 (for S3 inventory queries)
@@ -290,13 +292,12 @@ Sync rules:
 - Camera on UNVR but not in config → `add` with `enabled: false`
 - Camera in config but not on UNVR (and currently enabled) → `disable`
 - Name differs between UNVR and config → `update_name`
-- Timezone differs between UNVR and config → `update_timezone`
 
 Response shape:
 ```json
 {
   "unvr_cameras": int,
-  "changes": [{ "action": "add|disable|update_name|update_timezone", "camera_id": str, "reason": str, ... }],
+  "changes": [{ "action": "add|disable|update_name", "camera_id": str, "reason": str, ... }],
   "total_changes": int
 }
 ```

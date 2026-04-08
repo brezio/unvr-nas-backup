@@ -92,8 +92,8 @@ def _unvr_ranges(camera_id=None):
 
 
 def _unvr_cameras():
-    """Query UNVR for the cameras table (id, name, timezone)."""
-    sql = "COPY (SELECT id, name, timezone FROM cameras ORDER BY name) TO STDOUT WITH CSV HEADER;"
+    """Query UNVR for the cameras table (id, name)."""
+    sql = "COPY (SELECT id, name FROM cameras ORDER BY name) TO STDOUT WITH CSV HEADER;"
     # Use -At without -F for COPY output
     if not PROTECT_HOST or not SSH_OPTS:
         raise RuntimeError("PROTECT_HOST or SSH_OPTS not configured")
@@ -119,16 +119,24 @@ def _unvr_cameras():
     for line in result.stdout.strip().splitlines():
         if not line or line.startswith("id,"):
             continue
-        parts = line.split(",", 2)
+        parts = line.split(",", 1)
         if len(parts) >= 2:
-            entry = {"id": parts[0].strip(), "name": parts[1].strip()}
-            if len(parts) >= 3:
-                entry["timezone"] = parts[2].strip() or None
-            else:
-                entry["timezone"] = None
-            cameras.append(entry)
+            cameras.append({"id": parts[0].strip(), "name": parts[1].strip()})
 
     return cameras
+
+
+TIMEZONE_CACHE_FILE = "/shared/timezone"
+
+
+def _read_cached_timezone():
+    """Read the device timezone cached by entrypoint.sh."""
+    try:
+        with open(TIMEZONE_CACHE_FILE) as f:
+            tz = f.read().strip()
+            return tz if tz else "UTC"
+    except FileNotFoundError:
+        return "UTC"
 
 
 class TriggerHandler(BaseHTTPRequestHandler):
@@ -209,6 +217,10 @@ class TriggerHandler(BaseHTTPRequestHandler):
                 self._send_json({"cameras": cameras})
             except RuntimeError as exc:
                 self._send_json({"error": str(exc)}, status=502)
+
+        elif path == "/unvr/timezone":
+            tz = _read_cached_timezone()
+            self._send_json({"timezone": tz})
 
         else:
             self._send_json({"error": "not found"}, status=404)
